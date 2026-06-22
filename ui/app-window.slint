@@ -3,6 +3,7 @@ import { Button, VerticalBox } from "std-widgets.slint";
 export component AppWindow inherits Window {
     in-out property <int> counter: 42;
     callback request-increase-value();
+    callback open-new-window();
     VerticalBox {
         Text {
             text: "Counter: \{root.counter}";
@@ -14,5 +15,18 @@ export component AppWindow inherits Window {
                 root.request-increase-value();
             }
         }
+        Button {
+            text: "Open new window";
+            clicked => {
+                root.open-new-window();
+            }
+        }
+    }
+}
+
+export component HelloWindow inherits Window {
+    title: "Hello";
+    Text {
+        text: "Hello world";
     }
 }
