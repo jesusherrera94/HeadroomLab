@@ -1,4 +1,5 @@
 slint::include_modules!();
+
 pub mod domain;
 pub mod application;
 pub mod infrastructure;
