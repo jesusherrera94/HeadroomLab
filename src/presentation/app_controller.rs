@@ -4,13 +4,17 @@ use crate::AppWindow;
 use slint::ComponentHandle; // used for as_weak
 use crate::application::ports::CounterRepository;
 use crate::application::counter_service::CounterService;
-use crate::presentation::window_manager::WindowManager;
+use crate::application::simulator_service::SimulatorService;
+use crate::presentation::window_manager::{ WindowManager};
+use crate::presentation::simulation_controller;
 
 pub fn bind<R: CounterRepository + 'static>(
     ui: &AppWindow,
     service: Rc<CounterService<R>>,
+    sim_service: Rc<SimulatorService>,
     windows: Rc<WindowManager>,
 ) {
+    
     ui.on_request_increase_value({
         let ui_handle = ui.as_weak();
         let service = service.clone();
@@ -23,6 +27,13 @@ pub fn bind<R: CounterRepository + 'static>(
     ui.on_open_new_window({
         let windows = windows.clone();
         move || windows.open_hello()
+    });
+
+    ui.on_open_simulator_window({
+        let windows = windows.clone();
+        move || {
+            windows.open_simulator();
+        }
     });
 
     ui.window().on_close_requested({

@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sim_service = Rc::new(SimulatorService::new(audio_engine));
 
     let windows = Rc::new(WindowManager::default());
-    app_controller::bind(&ui, service, windows);
+    app_controller::bind(&ui, service, sim_service, windows);
     ui.run()?;
     Ok(())
 }
