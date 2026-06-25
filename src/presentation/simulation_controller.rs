@@ -16,7 +16,7 @@ pub fn bind(
 
     ui.on_upload_audio(move || {
         let ui = ui_handle.unwrap();
-        
+        println!("[SimulationController] Uploading audio file...");
         // Open native file dialog
         if let Some(path) = FileDialog::new()
             .add_filter("Audio", &["wav", "mp3", "ogg"])

@@ -6,7 +6,7 @@ use HeadroomLab::{
     AppWindow,
     application::{counter_service::CounterService, simulator_service::SimulatorService},
     infrastructure::{in_memory_counter_repo::InMemoryCounterRepo, audio_engine::AudioEngine},
-    presentation::{app_controller, window_manager::WindowManager, simulation_controller},
+    presentation::{app_controller, window_manager::WindowManager},
 };
 
 use HeadroomLab::*; // trait ComponentHandle
@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let windows = Rc::new(WindowManager::default());
     app_controller::bind(&ui, service, sim_service, windows);
+
     ui.run()?;
     Ok(())
 }

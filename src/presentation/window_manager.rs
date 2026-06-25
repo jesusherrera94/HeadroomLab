@@ -6,8 +6,7 @@ use crate::SimulatorWindow;
 
 #[derive(Default)]
 pub struct WindowManager {
-    secondary: RefCell<Option<HelloWindow>>,
-    simulator: RefCell<Option<SimulatorWindow>>,
+    secondary: RefCell<Option<HelloWindow>>
 }
 impl WindowManager {
     pub fn open_hello(&self) {
@@ -15,11 +14,11 @@ impl WindowManager {
         hello.show().unwrap();
         *self.secondary.borrow_mut() = Some(hello);
     }
-    pub fn open_simulator(&self) {
+    pub fn open_simulator(&self) -> SimulatorWindow {
         let simulator = SimulatorWindow::new().unwrap();
         self.initial_simulator_state(&simulator);
         simulator.show().unwrap();
-        *self.simulator.borrow_mut() = Some(simulator);
+        simulator
     }
     
     // Future implementation for the graph window
@@ -29,7 +28,6 @@ impl WindowManager {
 
     pub fn close_all(&self) {
         *self.secondary.borrow_mut() = None;
-        *self.simulator.borrow_mut() = None;
     }
 
     // private methods
