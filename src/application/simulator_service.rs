@@ -23,7 +23,7 @@ impl SimulatorService {
             .map_err(|_| AudioError::UnsupportedFormat)?; // Simplified mapping
             
         let track = AudioTrack::validate_and_create(
-            file_path, meta.0, meta.1, meta.2, &meta.3
+            file_path, meta.duration_seconds, meta.sample_rate, meta.bit_depth, &meta.format
         )?;
         
         let duration = track.duration_seconds;

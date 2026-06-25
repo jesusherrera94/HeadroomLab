@@ -1,6 +1,12 @@
 use crate::domain::counter::Counter;
-use crate::domain::audio_track::AudioTrack;
 // Port: the application depends on this abstraction.
+
+pub struct AudioMetadata {
+    pub duration_seconds: f32,
+    pub sample_rate: u32,
+    pub bit_depth: u8,
+    pub format: String,
+}
 
 pub trait CounterRepository {
     fn load(&self) -> Counter;
@@ -8,9 +14,11 @@ pub trait CounterRepository {
 }
 
 pub trait AudioEnginePort {
-    fn load_file(&self, path: &str) -> Result<(f32, u32, u8, String), String>;
+    fn load_file(&self, path: &str) -> Result<AudioMetadata, String>;
     fn play(&self);
     fn stop(&self);
     fn set_bypass(&self, enabled: bool);
     fn seek(&self, time_seconds: f32);
+    fn add_processor(&self, processor: Box<dyn crate::domain::audio_processor::AudioProcessor>);
+    fn clear_processors(&self);
 }
