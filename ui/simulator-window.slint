@@ -33,7 +33,7 @@ export component SimulatorWindow inherits Window {
             }
             Button {
                 text: root.is_playing ? "Stop" : "Play";
-                //enabled: root.has_audio;
+                enabled: root.has_audio;
                 clicked => { root.toggle_play() }
             }
             Button {

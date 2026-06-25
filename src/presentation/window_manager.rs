@@ -6,7 +6,9 @@ use crate::SimulatorWindow;
 
 #[derive(Default)]
 pub struct WindowManager {
-    secondary: RefCell<Option<HelloWindow>>
+    secondary: RefCell<Option<HelloWindow>>,
+    simulator:        RefCell<Option<SimulatorWindow>>,
+    simulator_timer:  RefCell<Option<slint::Timer>>,
 }
 impl WindowManager {
     pub fn open_hello(&self) {
@@ -28,6 +30,12 @@ impl WindowManager {
 
     pub fn close_all(&self) {
         *self.secondary.borrow_mut() = None;
+        *self.simulator.borrow_mut()       = None;
+        *self.simulator_timer.borrow_mut() = None;
+    }
+
+    pub fn set_simulator_timer(&self, timer: slint::Timer) {
+        *self.simulator_timer.borrow_mut() = Some(timer);
     }
 
     // private methods

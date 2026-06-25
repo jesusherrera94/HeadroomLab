@@ -36,4 +36,6 @@ impl SimulatorService {
     pub fn stop(&self) { self.audio_engine.stop(); }
     pub fn toggle_bypass(&self, state: bool) { self.audio_engine.set_bypass(state); }
     pub fn seek_to(&self, time: f32) { self.audio_engine.seek(time); }
+    pub fn current_position(&self) -> f32 { self.audio_engine.current_position() }
+    pub fn is_playing(&self) -> bool      { self.audio_engine.is_playing() }
 }

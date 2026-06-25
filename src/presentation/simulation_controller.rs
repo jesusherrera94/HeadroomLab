@@ -1,5 +1,6 @@
 use std::rc::Rc;
-use slint::ComponentHandle;
+use std::time::Duration;
+use slint::{ComponentHandle, Timer, TimerMode};
 use rfd::FileDialog;
 
 use crate::SimulatorWindow;
@@ -10,7 +11,7 @@ pub fn bind(
     ui: &SimulatorWindow,
     service: Rc<SimulatorService>,
     windows: Rc<WindowManager>,
-) {
+) -> Timer {
     let ui_handle = ui.as_weak();
     let service_clone = service.clone();
 
@@ -65,4 +66,26 @@ pub fn bind(
     ui.on_open_graph(move || {
         windows_clone.open_graph_window();
     });
+
+    let ui_handle = ui.as_weak();
+    let service_clone = service.clone();
+    let timer = Timer::default();
+    timer.start(
+        TimerMode::Repeated,
+        Duration::from_millis(100),
+        move || {
+            let ui = match ui_handle.upgrade() {
+                Some(u) => u,
+                None => return,   // window was closed
+            };
+            // Sync slider position from the actual playhead
+            ui.set_current_time(service_clone.current_position());
+            // Detect natural end-of-track: engine stopped but UI still shows "Stop"
+            if !service_clone.is_playing() && ui.get_is_playing() {
+                ui.set_is_playing(false);
+                ui.set_current_time(0.0);
+            }
+        },
+    );
+    timer
 }

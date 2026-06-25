@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream, StreamConfig};
+use cpal::{Stream, StreamConfig};
 use crate::application::ports::{AudioEnginePort, AudioMetadata};
 use crate::domain::audio_processor::AudioProcessor;
 use crate::infrastructure::audio_decoder::decode_audio_file;
@@ -97,6 +97,7 @@ fn fill_output(output: &mut [f32], state_arc: &Arc<Mutex<PlaybackState>>) {
             break;
         }
         frame.copy_from_slice(&state.samples[state.playhead..state.playhead + frame.len()]);
+        println!("Playhead: {:?}", state.playhead);
         state.playhead += frame.len();
     }
     // Apply effect chain (skipped when bypassed)
@@ -157,6 +158,16 @@ impl AudioEnginePort for AudioEngine {
 
     fn clear_processors(&self) {
         self.state.lock().unwrap().processors.clear();
+    }
+    fn current_position(&self) -> f32 {
+        let state = self.state.lock().unwrap();
+        if state.sample_rate == 0 || state.channels == 0 {
+            return 0.0;
+        }
+        state.playhead as f32 / (state.sample_rate as f32 * state.channels as f32)
+    }
+    fn is_playing(&self) -> bool {
+        self.state.lock().unwrap().is_playing
     }
 }
 

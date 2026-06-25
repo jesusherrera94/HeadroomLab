@@ -34,7 +34,8 @@ pub fn bind<R: CounterRepository + 'static>(
         let sim_service = sim_service.clone();
         move || {
             let sim_window = windows.open_simulator();
-            simulation_controller::bind(&sim_window, sim_service.clone(), windows.clone());
+            let timer = simulation_controller::bind(&sim_window, sim_service.clone(), windows.clone());
+            windows.set_simulator_timer(timer);
         }
     });
 

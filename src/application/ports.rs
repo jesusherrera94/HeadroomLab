@@ -21,4 +21,6 @@ pub trait AudioEnginePort {
     fn seek(&self, time_seconds: f32);
     fn add_processor(&self, processor: Box<dyn crate::domain::audio_processor::AudioProcessor>);
     fn clear_processors(&self);
+    fn current_position(&self) -> f32;
+    fn is_playing(&self) -> bool;
 }
