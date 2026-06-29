@@ -5,6 +5,7 @@ export component AppWindow inherits Window {
     callback request-increase-value();
     callback open-new-window();
     callback close-requested();
+    callback open-simulator-window();
     VerticalBox {
         Text {
             text: "Counter: \{root.counter}";
@@ -22,12 +23,12 @@ export component AppWindow inherits Window {
                 root.open-new-window();
             }
         }
+        Button {
+            text: "Launch simulator";
+            clicked => {
+                root.open-simulator-window();
+            }
+        }
     }
 }
 
-export component HelloWindow inherits Window {
-    title: "Hello";
-    Text {
-        text: "Hello world";
-    }
-}

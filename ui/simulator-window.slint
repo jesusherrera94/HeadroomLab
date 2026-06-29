@@ -1,0 +1,75 @@
+import { Button, Slider, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component SimulatorWindow inherits Window {
+    title: "HeadroomLab - Hardware Simulator";
+    width: 600px;
+    height: 500px;
+
+    in-out property <bool> has_audio: false;
+    in-out property <bool> is_playing: false;
+    in-out property <bool> is_bypassed: false;
+    in-out property <float> current_time: 0.0;
+    in-out property <float> duration: 0.0;
+
+    callback upload_audio();
+    callback toggle_play();
+    callback toggle_bypass();
+    callback open_graph();
+    callback seek_audio(float);
+
+    VerticalBox {
+        spacing: 15px;
+
+        Text {
+            text: "Audio Player";
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        HorizontalBox {
+            Button {
+                text: "Upload Audio";
+                clicked => { root.upload_audio() }
+            }
+            Button {
+                text: root.is_playing ? "Stop" : "Play";
+                enabled: root.has_audio;
+                clicked => { root.toggle_play() }
+            }
+            Button {
+                text: root.is_bypassed ? "Bypassed [ON]" : "Bypass [OFF]";
+                enabled: root.has_audio;
+                clicked => { root.toggle_bypass() }
+            }
+            Button {
+                text: "View graph";
+                enabled: root.has_audio;
+                clicked => { root.open_graph() }
+            }
+        }
+
+        HorizontalBox {
+            Text { text: round(root.current_time) + "s"; vertical-alignment: center; }
+            Slider {
+                minimum: 0.0;
+                maximum: root.duration;
+                value: root.current_time;
+                enabled: root.has_audio;
+                changed(val) => { root.seek_audio(val); }
+            }
+            Text { text: round(root.duration) + "s"; vertical-alignment: center; }
+        }
+
+        // Blank space for simulated hardware controls
+        Rectangle {
+            background: #2a2a2a;
+            border-color: #444;
+            border-width: 1px;
+            
+            Text {
+                text: "Simulated Hardware Controls Layout Space";
+                color: #666;
+            }
+        }
+    }
+}
