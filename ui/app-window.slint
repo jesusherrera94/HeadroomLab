@@ -1,11 +1,13 @@
-import { Button, VerticalBox } from "std-widgets.slint";
+import { Button, VerticalBox, HorizontalBox, LineEdit } from "std-widgets.slint";
 
 export component AppWindow inherits Window {
     in-out property <int> counter: 42;
+    in-out property <string> effect_build_path: "";
     callback request-increase-value();
     callback open-new-window();
     callback close-requested();
     callback open-simulator-window();
+    callback browse_effect_build();
     VerticalBox {
         Text {
             text: "Counter: \{root.counter}";
@@ -23,6 +25,21 @@ export component AppWindow inherits Window {
                 root.open-new-window();
             }
         }
+
+        HorizontalBox {
+            LineEdit {
+                text <=> root.effect_build_path;
+                placeholder-text: "Path to effect .dylib…";
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Browse…";
+                clicked => {
+                    root.browse_effect_build();
+                }
+            }
+        }
+
         Button {
             text: "Launch simulator";
             clicked => {
@@ -31,4 +48,3 @@ export component AppWindow inherits Window {
         }
     }
 }
-

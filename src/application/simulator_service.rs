@@ -1,11 +1,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use crate::domain::audio_track::{AudioTrack, AudioError};
+use crate::domain::plugin::{EffectPlugin, PluginError};
 use crate::application::ports::AudioEnginePort;
+use crate::infrastructure::dylib_plugin::{DylibPlugin, SharedPluginProcessor};
+
+/// Sample rate handed to the plugin at creation time. The simulator loads the
+/// effect before any audio file is chosen, so we use the engine's default rate.
+const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 pub struct SimulatorService {
     audio_engine: Rc<dyn AudioEnginePort>,
     current_track: RefCell<Option<AudioTrack>>,
+    plugin: RefCell<Option<Arc<Mutex<DylibPlugin>>>>,
 }
 
 impl SimulatorService {
@@ -13,6 +21,46 @@ impl SimulatorService {
         Self {
             audio_engine,
             current_track: RefCell::new(None),
+            plugin: RefCell::new(None),
+        }
+    }
+
+    pub fn load_plugin(&self, path: &str) -> Result<(), PluginError> {
+        self.audio_engine.clear_processors();
+        let plugin = DylibPlugin::load(path, DEFAULT_SAMPLE_RATE)?;
+        let shared = Arc::new(Mutex::new(plugin));
+        self.audio_engine
+            .add_processor(Box::new(SharedPluginProcessor::new(shared.clone())));
+        *self.plugin.borrow_mut() = Some(shared);
+        Ok(())
+    }
+
+    pub fn unload_plugin(&self) {
+        self.audio_engine.clear_processors();
+        *self.plugin.borrow_mut() = None;
+    }
+
+    pub fn set_knob(&self, index: usize, value: f32) {
+        if let Some(p) = self.plugin.borrow().as_ref() {
+            if let Ok(mut plugin) = p.lock() {
+                plugin.set_knob(index, value);
+            }
+        }
+    }
+
+    pub fn set_switch(&self, index: usize, position: i32) {
+        if let Some(p) = self.plugin.borrow().as_ref() {
+            if let Ok(mut plugin) = p.lock() {
+                plugin.set_switch(index, position);
+            }
+        }
+    }
+
+    pub fn set_footswitch(&self, index: usize, pressed: bool) {
+        if let Some(p) = self.plugin.borrow().as_ref() {
+            if let Ok(mut plugin) = p.lock() {
+                plugin.set_footswitch(index, pressed);
+            }
         }
     }
 
