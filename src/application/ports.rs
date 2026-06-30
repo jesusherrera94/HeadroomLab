@@ -9,6 +9,14 @@ pub struct AudioMetadata {
     pub format: String,
 }
 
+/// A point-in-time copy of the original (unprocessed) decoded audio buffer,
+/// used to render the graph view without touching the live playback state.
+pub struct AudioSnapshot {
+    pub samples: Vec<f32>, // interleaved, original/unprocessed
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
 pub trait CounterRepository {
     fn load(&self) -> Counter;
     fn save(&self, counter: &Counter);
@@ -30,4 +38,6 @@ pub trait AudioEnginePort {
     fn clear_processors(&self);
     fn current_position(&self) -> f32;
     fn is_playing(&self) -> bool;
+    /// Returns a copy of the original decoded buffer, or `None` if no audio is loaded.
+    fn snapshot_samples(&self) -> Option<AudioSnapshot>;
 }

@@ -6,6 +6,7 @@ use rfd::FileDialog;
 use crate::application::ports::CounterRepository;
 use crate::application::counter_service::CounterService;
 use crate::application::simulator_service::SimulatorService;
+use crate::application::graph_service::GraphService;
 use crate::presentation::window_manager::{ WindowManager};
 use crate::presentation::simulation_controller;
 
@@ -13,6 +14,7 @@ pub fn bind<R: CounterRepository + 'static>(
     ui: &AppWindow,
     service: Rc<CounterService<R>>,
     sim_service: Rc<SimulatorService>,
+    graph_service: Rc<GraphService>,
     windows: Rc<WindowManager>,
 ) {
     
@@ -47,15 +49,19 @@ pub fn bind<R: CounterRepository + 'static>(
     ui.on_open_simulator_window({
         let windows = windows.clone();
         let sim_service = sim_service.clone();
+        let graph_service = graph_service.clone();
         let ui_handle = ui.as_weak();
         move || {
             let path = ui_handle.unwrap().get_effect_build_path().to_string();
             let sim_window = windows.open_simulator(path.clone());
-            if let Err(e) = sim_service.load_plugin(&path) {
-                sim_window.set_error_message(e.to_string().into());
-                sim_window.set_show_error(true);
+            match sim_service.load_plugin(&path) {
+                Ok(()) => graph_service.set_plugin_path(&path),
+                Err(e) => {
+                    sim_window.set_error_message(e.to_string().into());
+                    sim_window.set_show_error(true);
+                }
             }
-            let timer = simulation_controller::bind(&sim_window, sim_service.clone(), windows.clone());
+            let timer = simulation_controller::bind(&sim_window, sim_service.clone(), graph_service.clone(), windows.clone());
             windows.set_simulator_timer(timer);
         }
     });

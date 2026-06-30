@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
-use crate::application::ports::{AudioEnginePort, AudioMetadata};
+use crate::application::ports::{AudioEnginePort, AudioMetadata, AudioSnapshot};
 use crate::domain::audio_processor::AudioProcessor;
 use crate::infrastructure::audio_decoder::decode_audio_file;
 
@@ -168,6 +168,18 @@ impl AudioEnginePort for AudioEngine {
     }
     fn is_playing(&self) -> bool {
         self.state.lock().unwrap().is_playing
+    }
+
+    fn snapshot_samples(&self) -> Option<AudioSnapshot> {
+        let state = self.state.lock().unwrap();
+        if state.samples.is_empty() {
+            return None;
+        }
+        Some(AudioSnapshot {
+            samples: state.samples.clone(),
+            sample_rate: state.sample_rate,
+            channels: state.channels,
+        })
     }
 }
 
