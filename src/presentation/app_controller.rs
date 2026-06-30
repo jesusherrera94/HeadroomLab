@@ -2,6 +2,7 @@
 use std::rc::Rc;
 use crate::AppWindow;
 use slint::ComponentHandle; // used for as_weak
+use rfd::FileDialog;
 use crate::application::ports::CounterRepository;
 use crate::application::counter_service::CounterService;
 use crate::application::simulator_service::SimulatorService;
@@ -29,11 +30,31 @@ pub fn bind<R: CounterRepository + 'static>(
         move || windows.open_hello()
     });
 
+    ui.on_browse_effect_build({
+        let ui_handle = ui.as_weak();
+        move || {
+            if let Some(path) = FileDialog::new()
+                .add_filter("Dynamic Library", &["dylib", "so"])
+                .pick_file()
+            {
+                ui_handle
+                    .unwrap()
+                    .set_effect_build_path(path.display().to_string().into());
+            }
+        }
+    });
+
     ui.on_open_simulator_window({
         let windows = windows.clone();
         let sim_service = sim_service.clone();
+        let ui_handle = ui.as_weak();
         move || {
-            let sim_window = windows.open_simulator();
+            let path = ui_handle.unwrap().get_effect_build_path().to_string();
+            let sim_window = windows.open_simulator(path.clone());
+            if let Err(e) = sim_service.load_plugin(&path) {
+                sim_window.set_error_message(e.to_string().into());
+                sim_window.set_show_error(true);
+            }
             let timer = simulation_controller::bind(&sim_window, sim_service.clone(), windows.clone());
             windows.set_simulator_timer(timer);
         }

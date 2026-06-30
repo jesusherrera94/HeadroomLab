@@ -1,4 +1,5 @@
 use crate::domain::counter::Counter;
+use crate::domain::plugin::PluginError;
 // Port: the application depends on this abstraction.
 
 pub struct AudioMetadata {
@@ -11,6 +12,12 @@ pub struct AudioMetadata {
 pub trait CounterRepository {
     fn load(&self) -> Counter;
     fn save(&self, counter: &Counter);
+}
+
+pub trait PluginLoaderPort {
+    /// Load the effect from `path`. Replaces any previously loaded plugin.
+    fn load_plugin(&self, path: &str) -> Result<(), PluginError>;
+    fn unload_plugin(&self);
 }
 
 pub trait AudioEnginePort {

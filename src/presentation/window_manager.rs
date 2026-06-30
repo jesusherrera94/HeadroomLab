@@ -16,10 +16,12 @@ impl WindowManager {
         hello.show().unwrap();
         *self.secondary.borrow_mut() = Some(hello);
     }
-    pub fn open_simulator(&self) -> SimulatorWindow {
+    pub fn open_simulator(&self, _plugin_path: String) -> SimulatorWindow {
         let simulator = SimulatorWindow::new().unwrap();
         self.initial_simulator_state(&simulator);
         simulator.show().unwrap();
+        // The plugin at `_plugin_path` is loaded by the caller (app_controller)
+        // via SimulatorService::load_plugin so errors can be surfaced on this window.
         simulator
     }
     

@@ -67,6 +67,23 @@ pub fn bind(
         windows_clone.open_graph_window();
     });
 
+    let service_clone = service.clone();
+    ui.on_knob_changed(move |index, value| {
+        service_clone.set_knob(index as usize, value);
+    });
+
+    let service_clone = service.clone();
+    ui.on_switch_changed(move |index, position| {
+        service_clone.set_switch(index as usize, position);
+    });
+
+    let service_clone = service.clone();
+    ui.on_footswitch_changed(move |index, pressed| {
+        service_clone.set_footswitch(index as usize, pressed);
+    });
+
+    ui.on_error_dismissed(|| {});
+
     let ui_handle = ui.as_weak();
     let service_clone = service.clone();
     let timer = Timer::default();

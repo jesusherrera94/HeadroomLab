@@ -8,6 +8,7 @@ rfd = "0.17.2"
 slint = "1.16.1"
 cpal     = "0.15"
 symphonia = { version = "0.5", features = ["wav", "mp3", "vorbis", "aac"] }
+libloading = "0.8"
 
 [build-dependencies]
 slint-build = "1.16.1"
