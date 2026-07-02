@@ -9,7 +9,9 @@ use crate::infrastructure::audio_decoder::decode_audio_file;
 
 // ── Shared state (audio thread + main thread) ─────────────────────────────────
 struct PlaybackState {
-    samples: Vec<f32>,         // decoded PCM, interleaved, normalised to [-1, 1]
+    // Arc so `snapshot_samples` can hand out the buffer without copying it
+    // while the state mutex is held (the audio callback try_locks this mutex).
+    samples: Arc<Vec<f32>>,    // decoded PCM, interleaved, normalised to [-1, 1]
     sample_rate: u32,
     channels: u16,
     playhead: usize,           // current sample index (interleaved)
@@ -20,7 +22,7 @@ struct PlaybackState {
 impl PlaybackState {
     fn empty() -> Self {
         Self {
-            samples: Vec::new(),
+            samples: Arc::new(Vec::new()),
             sample_rate: 48_000,
             channels: 2,
             playhead: 0,
@@ -96,8 +98,8 @@ fn fill_output(output: &mut [f32], state_arc: &Arc<Mutex<PlaybackState>>) {
             state.is_playing = false;
             break;
         }
-        frame.copy_from_slice(&state.samples[state.playhead..state.playhead + frame.len()]);
-        println!("Playhead: {:?}", state.playhead);
+        let start = state.playhead;
+        frame.copy_from_slice(&state.samples[start..start + frame.len()]);
         state.playhead += frame.len();
     }
     // Apply effect chain (skipped when bypassed)
@@ -115,7 +117,7 @@ impl AudioEnginePort for AudioEngine {
             decode_audio_file(path)?;
         {
             let mut state = self.state.lock().unwrap();
-            state.samples = samples;
+            state.samples = Arc::new(samples);
             state.sample_rate = sample_rate;
             state.channels = channels;
             state.playhead = 0;
@@ -176,7 +178,7 @@ impl AudioEnginePort for AudioEngine {
             return None;
         }
         Some(AudioSnapshot {
-            samples: state.samples.clone(),
+            samples: Arc::clone(&state.samples),
             sample_rate: state.sample_rate,
             channels: state.channels,
         })

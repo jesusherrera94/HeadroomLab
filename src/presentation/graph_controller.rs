@@ -5,6 +5,7 @@ use std::time::Duration;
 use slint::{ComponentHandle, Timer, TimerMode};
 
 use crate::application::graph_service::{GraphData, GraphService};
+use crate::application::graph_worker::GraphComputeWorker;
 use crate::domain::signal::{Spectrum, Waveform};
 use crate::infrastructure::plot_renderer::{render_spectrum, render_waveform};
 use crate::GraphWindow;
@@ -14,12 +15,18 @@ const PLOT_HEIGHT_PX: u32 = 300;
 
 /// Wires a `GraphWindow` to a `GraphService`: registers the four `render_*`
 /// pure callbacks (rasterizing via `plot_renderer`) and starts a 100ms polling
-/// timer — the same idiom `simulation_controller` uses — that recomputes the
-/// signals only when `GraphService` reports something changed.
-pub fn bind(ui: &GraphWindow, graph_service: Rc<GraphService>) -> Timer {
-    let cached: Rc<RefCell<Option<GraphData>>> = Rc::new(RefCell::new(graph_service.compute_signals()));
+/// timer that ships recompute jobs to a background worker and applies finished
+/// results. The heavy work (plugin render + FFTs) never runs on this thread,
+/// so the simulator window's controls stay responsive.
+pub fn bind(ui: &GraphWindow, graph_service: Rc<GraphService>) -> (Timer, Rc<GraphComputeWorker>) {
+    let cached: Rc<RefCell<Option<GraphData>>> = Rc::new(RefCell::new(None));
     let last_full_end: Rc<Cell<f32>> = Rc::new(Cell::new(-1.0));
-    apply_metadata(ui, cached.borrow().as_ref(), &last_full_end);
+    let worker = Rc::new(GraphComputeWorker::spawn());
+
+    // The first result arrives asynchronously via the timer below.
+    graph_service.mark_params_dirty();
+    ui.set_has_processed(false);
+    ui.set_processed_status("Computing…".into());
 
     ui.on_render_original_time({
         let cached = cached.clone();
@@ -55,17 +62,27 @@ pub fn bind(ui: &GraphWindow, graph_service: Rc<GraphService>) -> Timer {
 
     let ui_handle = ui.as_weak();
     let timer = Timer::default();
+    let timer_worker = worker.clone();
     timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let Some(ui) = ui_handle.upgrade() else { return };
-        if !graph_service.take_dirty() {
-            return;
+
+        if let Some(data) = timer_worker.try_recv_result() {
+            apply_metadata(&ui, Some(&data), &last_full_end);
+            *cached.borrow_mut() = Some(data);
+            ui.set_data_version(ui.get_data_version() + 1);
         }
-        let data = graph_service.compute_signals();
-        apply_metadata(&ui, data.as_ref(), &last_full_end);
-        *cached.borrow_mut() = data;
-        ui.set_data_version(ui.get_data_version() + 1);
+
+        // One job in flight at most: while a knob is being dragged the dirty
+        // flag stays set, so the next job (with the newest control snapshot)
+        // is submitted as soon as the previous result lands (latest-wins).
+        if timer_worker.is_idle() && graph_service.take_dirty() {
+            match graph_service.build_request() {
+                Some(request) => timer_worker.submit(request),
+                None => apply_metadata(&ui, None, &last_full_end),
+            }
+        }
     });
-    timer
+    (timer, worker)
 }
 
 /// Updates the non-plot UI state (status text, full-range bounds) and resets

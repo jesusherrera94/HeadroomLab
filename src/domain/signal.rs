@@ -5,6 +5,7 @@ use std::f32::consts::PI;
 use rustfft::{num_complex::Complex32, FftPlanner};
 
 /// A mono signal, normalised to [-1.0, 1.0].
+#[derive(Clone)]
 pub struct Waveform {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
@@ -30,6 +31,7 @@ impl Waveform {
 }
 
 /// A magnitude spectrum: parallel arrays of frequency (Hz) and magnitude (dB).
+#[derive(Clone)]
 pub struct Spectrum {
     pub frequencies_hz: Vec<f32>,
     pub magnitudes_db: Vec<f32>,
