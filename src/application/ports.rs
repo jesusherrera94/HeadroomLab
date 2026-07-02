@@ -9,10 +9,12 @@ pub struct AudioMetadata {
     pub format: String,
 }
 
-/// A point-in-time copy of the original (unprocessed) decoded audio buffer,
+/// A point-in-time view of the original (unprocessed) decoded audio buffer,
 /// used to render the graph view without touching the live playback state.
+/// Shares the buffer via `Arc` so taking a snapshot is O(1) and never stalls
+/// the audio callback waiting on the playback mutex.
 pub struct AudioSnapshot {
-    pub samples: Vec<f32>, // interleaved, original/unprocessed
+    pub samples: std::sync::Arc<Vec<f32>>, // interleaved, original/unprocessed
     pub sample_rate: u32,
     pub channels: u16,
 }

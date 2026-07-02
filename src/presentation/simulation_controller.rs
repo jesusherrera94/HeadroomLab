@@ -71,8 +71,8 @@ pub fn bind(
     let graph_service_clone = graph_service.clone();
     ui.on_open_graph(move || {
         let graph_window = windows_clone.open_graph();
-        let timer = graph_controller::bind(&graph_window, graph_service_clone.clone());
-        windows_clone.set_graph_timer(timer);
+        let (timer, worker) = graph_controller::bind(&graph_window, graph_service_clone.clone());
+        windows_clone.set_graph_binding(timer, worker);
     });
 
     let service_clone = service.clone();
