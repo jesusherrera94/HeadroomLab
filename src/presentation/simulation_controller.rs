@@ -1,122 +1,136 @@
-use std::rc::Rc;
-use std::time::Duration;
-use slint::{ComponentHandle, Timer, TimerMode};
+//! Logic for the simulator window: owns its per-window state and translates
+//! view events into `SimulatorService`/`GraphService` calls.
+
 use rfd::FileDialog;
 
-use crate::SimulatorWindow;
-use crate::application::simulator_service::SimulatorService;
 use crate::application::graph_service::GraphService;
-use crate::presentation::window_manager::WindowManager;
-use crate::presentation::graph_controller;
+use crate::application::simulator_service::SimulatorService;
+use crate::presentation::components::organisms::hardware_controls_panel::HardwareControlsState;
+use crate::presentation::windows::simulator_window::SimulatorViewEvents;
 
-pub fn bind(
-    ui: &SimulatorWindow,
-    service: Rc<SimulatorService>,
-    graph_service: Rc<GraphService>,
-    windows: Rc<WindowManager>,
-) -> Timer {
-    let ui_handle = ui.as_weak();
-    let service_clone = service.clone();
-    let graph_service_clone = graph_service.clone();
+/// Per-window state, replacing the previous window's UI-bound properties.
+pub struct SimulatorState {
+    pub has_audio: bool,
+    pub is_playing: bool,
+    pub is_bypassed: bool,
+    pub current_time: f32,
+    pub duration: f32,
+    pub error_message: String,
+    pub show_error: bool,
+    pub hardware: HardwareControlsState,
+    /// Set to bring the OS window to the front on the next frame.
+    pub focus_requested: bool,
+}
 
-    ui.on_upload_audio(move || {
-        let ui = ui_handle.unwrap();
-        println!("[SimulationController] Uploading audio file...");
-        // Open native file dialog
-        if let Some(path) = FileDialog::new()
-            .add_filter("Audio", &["wav", "mp3", "ogg"])
-            .pick_file() 
-        {
-            match service_clone.handle_file_upload(path.display().to_string()) {
-                Ok(duration) => {
-                    ui.set_has_audio(true);
-                    ui.set_duration(duration);
-                    ui.set_current_time(0.0);
-                    ui.set_is_playing(false);
-                    service_clone.stop(); // Reset engine state
-                    graph_service_clone.mark_dirty(); // Refresh an already-open graph window
-                }
-                Err(e) => {
-                    println!("Validation failed: {:?}", e);
-                    // Here you could trigger a Slint modal for error notification
-                }
-            }
+impl Default for SimulatorState {
+    fn default() -> Self {
+        Self {
+            has_audio: false,
+            is_playing: false,
+            is_bypassed: false,
+            current_time: 0.0,
+            duration: 0.0,
+            error_message: String::new(),
+            show_error: false,
+            hardware: HardwareControlsState::default(),
+            focus_requested: false,
         }
-    });
+    }
+}
 
-    let ui_handle = ui.as_weak();
-    let service_clone = service.clone();
-    ui.on_toggle_play(move || {
-        let ui = ui_handle.unwrap();
-        let playing = !ui.get_is_playing();
-        ui.set_is_playing(playing);
-        if playing { service_clone.play(); } else { service_clone.stop(); }
-    });
+/// Follow-up actions the caller (app controller) must perform, since opening
+/// windows is the window manager's job.
+#[derive(Default)]
+pub struct SimulatorRequests {
+    pub open_graph: bool,
+}
 
-    let ui_handle = ui.as_weak();
-    let service_clone = service.clone();
-    ui.on_toggle_bypass(move || {
-        let ui = ui_handle.unwrap();
-        let bypassed = !ui.get_is_bypassed();
-        ui.set_is_bypassed(bypassed);
-        service_clone.toggle_bypass(bypassed);
-    });
+pub fn handle_events(
+    state: &mut SimulatorState,
+    events: SimulatorViewEvents,
+    service: &SimulatorService,
+    graph_service: &GraphService,
+) -> SimulatorRequests {
+    let mut requests = SimulatorRequests::default();
 
-    let service_clone = service.clone();
-    ui.on_seek_audio(move |val| {
-        service_clone.seek_to(val);
-    });
+    if events.transport.upload_clicked {
+        upload_audio(state, service, graph_service);
+    }
 
-    let windows_clone = windows.clone();
-    let graph_service_clone = graph_service.clone();
-    ui.on_open_graph(move || {
-        let graph_window = windows_clone.open_graph();
-        let (timer, worker) = graph_controller::bind(&graph_window, graph_service_clone.clone());
-        windows_clone.set_graph_binding(timer, worker);
-    });
+    if events.transport.play_toggled {
+        state.is_playing = !state.is_playing;
+        if state.is_playing {
+            service.play();
+        } else {
+            service.stop();
+        }
+    }
 
-    let service_clone = service.clone();
-    let graph_service_clone = graph_service.clone();
-    ui.on_knob_changed(move |index, value| {
-        service_clone.set_knob(index as usize, value);
-        graph_service_clone.set_knob(index as usize, value);
-    });
+    if events.transport.bypass_toggled {
+        state.is_bypassed = !state.is_bypassed;
+        service.toggle_bypass(state.is_bypassed);
+    }
 
-    let service_clone = service.clone();
-    let graph_service_clone = graph_service.clone();
-    ui.on_switch_changed(move |index, position| {
-        service_clone.set_switch(index as usize, position);
-        graph_service_clone.set_switch(index as usize, position);
-    });
+    if let Some(time) = events.transport.seek_to {
+        service.seek_to(time);
+    }
 
-    let service_clone = service.clone();
-    let graph_service_clone = graph_service.clone();
-    ui.on_footswitch_changed(move |index, pressed| {
-        service_clone.set_footswitch(index as usize, pressed);
-        graph_service_clone.set_footswitch(index as usize, pressed);
-    });
+    if events.transport.view_graph_clicked {
+        requests.open_graph = true;
+    }
 
-    ui.on_error_dismissed(|| {});
+    for (index, value) in events.hardware.knob_changes {
+        service.set_knob(index, value);
+        graph_service.set_knob(index, value);
+    }
+    for (index, position) in events.hardware.switch_changes {
+        service.set_switch(index, position);
+        graph_service.set_switch(index, position);
+    }
+    for (index, pressed) in events.hardware.footswitch_changes {
+        service.set_footswitch(index, pressed);
+        graph_service.set_footswitch(index, pressed);
+    }
 
-    let ui_handle = ui.as_weak();
-    let service_clone = service.clone();
-    let timer = Timer::default();
-    timer.start(
-        TimerMode::Repeated,
-        Duration::from_millis(100),
-        move || {
-            let ui = match ui_handle.upgrade() {
-                Some(u) => u,
-                None => return,   // window was closed
-            };
-            // Sync slider position from the actual playhead
-            ui.set_current_time(service_clone.current_position());
-            // Detect natural end-of-track: engine stopped but UI still shows "Stop"
-            if !service_clone.is_playing() && ui.get_is_playing() {
-                ui.set_is_playing(false);
-                ui.set_current_time(0.0);
-            }
-        },
-    );
-    timer
+    requests
+}
+
+/// Per-frame sync, replacing the previous 100ms UI timer: mirrors the playhead into
+/// the seek slider and detects natural end-of-track.
+pub fn tick(state: &mut SimulatorState, service: &SimulatorService) {
+    state.current_time = service.current_position();
+    if !service.is_playing() && state.is_playing {
+        state.is_playing = false;
+        state.current_time = 0.0;
+    }
+}
+
+fn upload_audio(
+    state: &mut SimulatorState,
+    service: &SimulatorService,
+    graph_service: &GraphService,
+) {
+    println!("[SimulationController] Uploading audio file...");
+    let Some(path) = FileDialog::new()
+        .add_filter("Audio", &["wav", "mp3", "ogg"])
+        .pick_file()
+    else {
+        return;
+    };
+
+    match service.handle_file_upload(path.display().to_string()) {
+        Ok(duration) => {
+            state.has_audio = true;
+            state.duration = duration;
+            state.current_time = 0.0;
+            state.is_playing = false;
+            service.stop(); // Reset engine state
+            graph_service.mark_dirty(); // Refresh an already-open graph window
+        }
+        Err(e) => {
+            println!("Validation failed: {:?}", e);
+            state.error_message = format!("Audio file validation failed: {:?}", e);
+            state.show_error = true;
+        }
+    }
 }

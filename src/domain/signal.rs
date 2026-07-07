@@ -1,4 +1,4 @@
-// Pure signal-processing types and math: no IO, no Slint, no plugin knowledge.
+// Pure signal-processing types and math: no IO, no UI, no plugin knowledge.
 // Reusable for any feature that needs to look at a buffer of audio samples.
 use std::f32::consts::PI;
 

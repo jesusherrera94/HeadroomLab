@@ -4,7 +4,7 @@ use std::thread;
 
 use crate::application::graph_service::{compute_graph_data, GraphComputeRequest, GraphData};
 
-/// Runs graph recomputes on a dedicated background thread so the Slint event
+/// Runs graph recomputes on a dedicated background thread so the UI event
 /// loop (and therefore the simulator controls) never blocks on plugin renders
 /// or FFTs.
 ///
