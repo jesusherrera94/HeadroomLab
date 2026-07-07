@@ -1,4 +1,3 @@
-use crate::domain::counter::Counter;
 use crate::domain::plugin::PluginError;
 // Port: the application depends on this abstraction.
 
@@ -17,11 +16,6 @@ pub struct AudioSnapshot {
     pub samples: std::sync::Arc<Vec<f32>>, // interleaved, original/unprocessed
     pub sample_rate: u32,
     pub channels: u16,
-}
-
-pub trait CounterRepository {
-    fn load(&self) -> Counter;
-    fn save(&self, counter: &Counter);
 }
 
 pub trait PluginLoaderPort {

@@ -5,15 +5,12 @@ edition = "2024"
 
 [dependencies]
 rfd = "0.17.2"
-slint = "1.16.1"
 cpal     = "0.15"
 symphonia = { version = "0.5", features = ["wav", "mp3", "vorbis", "aac"] }
 libloading = "0.8"
-plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "line_series", "ttf"] }
 rustfft = "6"
-
-[build-dependencies]
-slint-build = "1.16.1"
+eframe = "0.35.0"
+egui_plot = "0.36.0"
 
 [profile.release]
 codegen-units = 1
