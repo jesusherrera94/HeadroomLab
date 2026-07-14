@@ -11,7 +11,7 @@ use eframe::egui::{
 // -- Color tokens ------------------------------------------------------------
 
 /// Dark background of the simulated hardware panel.
-pub const PANEL_BACKGROUND: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x2e);
+pub const PANEL_BACKGROUND: Color32 = Color32::from_rgb(0x22, 0x22, 0x24);
 /// Background behind the plot panes.
 pub const PLOT_FRAME_BACKGROUND: Color32 = Color32::from_rgb(0x11, 0x11, 0x18);
 /// Border of the hardware panel.
@@ -35,7 +35,7 @@ pub const WAVEFORM_COLOR: Color32 = Color32::from_rgb(0x21, 0x96, 0xf3);
 /// Frequency-domain (spectrum) series color.
 pub const SPECTRUM_COLOR: Color32 = Color32::from_rgb(0xe6, 0x7e, 0x22);
 /// Plot drawing-area background (plots were rendered on white).
-pub const PLOT_BACKGROUND: Color32 = Color32::WHITE;
+pub const PLOT_BACKGROUND: Color32 = Color32::from_rgb(0x22, 0x22, 0x24);
 
 // -- Typography tokens (px, matching the previous UI markup) ------------------------
 
@@ -80,9 +80,9 @@ pub fn apply(ctx: &egui::Context) {
     ]
     .into();
 
-    let mut visuals = Visuals::light();
-    visuals.panel_fill = Color32::from_rgb(0xfb, 0xfb, 0xfb);
-    visuals.window_fill = Color32::from_rgb(0xfb, 0xfb, 0xfb);
+    let mut visuals = Visuals::dark();
+    visuals.panel_fill = Color32::from_rgb(0x1c, 0x1c, 0x1f);
+    visuals.window_fill = Color32::from_rgb(0x1c, 0x1c, 0x1f);
     visuals.selection.bg_fill = ACCENT;
     visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     visuals.hyperlink_color = ACCENT;
