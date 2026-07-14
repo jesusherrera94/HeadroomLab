@@ -35,7 +35,7 @@ pub const WAVEFORM_COLOR: Color32 = Color32::from_rgb(0x21, 0x96, 0xf3);
 /// Frequency-domain (spectrum) series color.
 pub const SPECTRUM_COLOR: Color32 = Color32::from_rgb(0xe6, 0x7e, 0x22);
 /// Plot drawing-area background (plots were rendered on white).
-pub const PLOT_BACKGROUND: Color32 = Color32::WHITE;
+pub const PLOT_BACKGROUND: Color32 = Color32::from_rgb(0x22, 0x22, 0x24);
 
 // -- Typography tokens (px, matching the previous UI markup) ------------------------
 
