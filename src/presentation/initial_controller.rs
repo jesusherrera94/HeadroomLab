@@ -2,12 +2,20 @@
 //! into a navigation intent (the project to open in the Editor). Recording the
 //! project in Recents and switching screens is the app controller's job.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rfd::FileDialog;
 
-use crate::domain::project::RecentProject;
+use crate::domain::project::{RecentProject, sanitize_target};
 use crate::presentation::windows::initial_window::InitialViewEvents;
+
+/// What the user asked to do this frame. The app controller acts on it:
+/// `Create` generates the project first (and only records/navigates on
+/// success); `Open` records + navigates directly (no generation).
+pub enum ProjectIntent {
+    Create(RecentProject),
+    Open(RecentProject),
+}
 
 /// Per-window state for the Initial screen.
 #[derive(Default)]
@@ -18,6 +26,8 @@ pub struct InitialState {
     pub path: String,
     /// Set once the user edits Path manually, freezing the Name→Path sync.
     pub path_edited: bool,
+    /// Error from the last failed generation attempt, shown inside the modal.
+    pub generation_error: Option<String>,
     /// Set to bring the OS window to the front on the next frame.
     pub focus_requested: bool,
 }
@@ -28,12 +38,16 @@ impl InitialState {
     fn open_modal(&mut self) {
         self.name.clear();
         self.path_edited = false;
+        self.generation_error = None;
         self.path = default_path_for(&self.name).to_string_lossy().to_string();
         self.modal_open = true;
     }
 
-    fn close_modal(&mut self) {
+    /// Closes the Create modal (called by the app controller on Cancel or a
+    /// successful generation).
+    pub fn close_modal(&mut self) {
         self.modal_open = false;
+        self.generation_error = None;
     }
 
     /// Re-derives Path from Name while the user hasn't taken over the field.
@@ -44,13 +58,14 @@ impl InitialState {
     }
 }
 
-/// Handles a frame's worth of Initial-window events, returning the project to
-/// open if the user chose one this frame.
+/// Handles a frame's worth of Initial-window events, returning an intent when
+/// the user chose an action this frame. For Create the modal is left open —
+/// the app controller closes it only after generation succeeds (D10).
 pub fn handle_events(
     state: &mut InitialState,
     events: InitialViewEvents,
     recents: &[RecentProject],
-) -> Option<RecentProject> {
+) -> Option<ProjectIntent> {
     if events.create_clicked {
         state.open_modal();
     }
@@ -58,30 +73,63 @@ pub fn handle_events(
     if events.open_clicked
         && let Some(project) = pick_folder()
     {
-        return Some(project);
+        return Some(ProjectIntent::Open(project));
     }
 
     if let Some(index) = events.recent_clicked
         && let Some(project) = recents.get(index)
     {
-        return Some(project.clone());
+        return Some(ProjectIntent::Open(project.clone()));
     }
 
     if state.modal_open {
+        // Editing either field clears a stale generation error and re-syncs
+        // the path while the user hasn't taken it over.
         if events.modal.name_changed {
             state.sync_path_to_name();
+            state.generation_error = None;
+        }
+        if events.modal.path_changed {
+            state.generation_error = None;
         }
         if events.modal.cancelled {
             state.close_modal();
         }
         if events.modal.created {
             let project = RecentProject::new(state.name.clone(), PathBuf::from(state.path.clone()));
-            state.close_modal();
-            return Some(project);
+            return Some(ProjectIntent::Create(project));
         }
     }
 
     None
+}
+
+/// Validates the Create inputs, returning an inline message (which disables
+/// **Create**) or `None` when the project can be generated. Cheap enough to run
+/// every frame: at worst one `read_dir` on the target path.
+pub fn create_validation(name: &str, path: &str) -> Option<String> {
+    if sanitize_target(name).is_none() {
+        return Some("Enter a name with at least one letter or digit.".to_string());
+    }
+    if path.trim().is_empty() {
+        return Some("Enter a save path.".to_string());
+    }
+
+    let dir = Path::new(path.trim());
+    if dir.is_file() {
+        return Some("That path is a file, not a folder.".to_string());
+    }
+    if dir.is_dir() && dir_non_empty(dir) {
+        return Some("That folder already exists and isn't empty.".to_string());
+    }
+
+    None
+}
+
+fn dir_non_empty(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
 }
 
 /// Opens the native folder picker; on selection builds a project named after

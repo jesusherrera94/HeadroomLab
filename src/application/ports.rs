@@ -23,6 +23,29 @@ pub trait RecentProjectsStore {
     fn save(&self, items: &[RecentProject]) -> Result<(), RecentProjectsError>;
 }
 
+/// Failure generating a new project on disk. The message is shown inline in the
+/// Create modal; on failure nothing is recorded in Recents.
+#[derive(Debug)]
+pub struct ProjectGenerationError(pub String);
+
+impl std::fmt::Display for ProjectGenerationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for ProjectGenerationError {}
+
+/// Writes a new, compilable passthrough effect project to disk. The UI-facing
+/// boundary for the Create flow (like `AudioEnginePort`), so `HeadroomApp`
+/// holds it directly rather than through a service.
+pub trait ProjectGeneratorPort {
+    /// Creates `path` (which must be missing or an empty directory) and writes
+    /// the template project into it. `name` is the display name; the build
+    /// target / main-file name is derived from it via `sanitize_target`.
+    fn generate(&self, name: &str, path: &std::path::Path) -> Result<(), ProjectGenerationError>;
+}
+
 pub struct AudioMetadata {
     pub duration_seconds: f32,
     pub sample_rate: u32,
