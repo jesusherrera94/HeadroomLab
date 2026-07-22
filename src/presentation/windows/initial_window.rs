@@ -9,7 +9,7 @@ use crate::presentation::components::molecules::create_project_modal::{
     CreateModalEvents, CreateModalFields, create_project_modal,
 };
 use crate::presentation::components::molecules::recent_project_item::recent_project_item;
-use crate::presentation::initial_controller::InitialState;
+use crate::presentation::initial_controller::{self, InitialState};
 use crate::presentation::theme;
 
 #[derive(Default)]
@@ -103,12 +103,16 @@ pub fn show(
 
     // Create modal on top of the window.
     if state.modal_open {
+        let validation = initial_controller::create_validation(&state.name, &state.path);
+        let generation_error = state.generation_error.clone();
         events.modal = create_project_modal(
             &ui.ctx().clone(),
             CreateModalFields {
                 name: &mut state.name,
                 path: &mut state.path,
                 path_edited: &mut state.path_edited,
+                validation: validation.as_deref(),
+                generation_error: generation_error.as_deref(),
             },
         );
     }

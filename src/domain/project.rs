@@ -44,6 +44,39 @@ impl RecentProject {
     }
 }
 
+/// Derives a snake_case build target from a display name: trims, lowercases,
+/// collapses every run of non-alphanumeric characters to a single `_`, and
+/// strips leading digits/underscores (C identifiers can't start with a digit).
+/// Returns `None` when nothing usable survives (e.g. `"###"`).
+pub fn sanitize_target(name: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut pending_sep = false;
+
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_sep && !out.is_empty() {
+                out.push('_');
+            }
+            pending_sep = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            // Any non-alphanumeric run becomes at most one separator.
+            pending_sep = true;
+        }
+    }
+
+    // Leading digits/underscores are invalid at the start of an identifier.
+    let target: String = out
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '_')
+        .to_string();
+
+    if target.is_empty() {
+        None
+    } else {
+        Some(target)
+    }
+}
+
 /// Splits a name into significant words on space/`-`/`_` separators and
 /// camelCase boundaries (lower→upper transitions).
 fn split_words(name: &str) -> Vec<String> {
@@ -102,5 +135,36 @@ mod tests {
     #[test]
     fn abbr_single_word_takes_first_two_chars() {
         assert_eq!(RecentProject::new("reverb", "/x").abbr(), "RE");
+    }
+
+    #[test]
+    fn sanitize_spaces_to_snake_case() {
+        assert_eq!(sanitize_target("My Fuzz").as_deref(), Some("my_fuzz"));
+    }
+
+    #[test]
+    fn sanitize_collapses_symbol_runs() {
+        assert_eq!(sanitize_target("a  --  b!!c").as_deref(), Some("a_b_c"));
+    }
+
+    #[test]
+    fn sanitize_strips_leading_digits_and_underscores() {
+        assert_eq!(sanitize_target("__9lives").as_deref(), Some("lives"));
+        assert_eq!(sanitize_target("123abc").as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn sanitize_all_symbols_is_none() {
+        assert_eq!(sanitize_target("###"), None);
+        assert_eq!(sanitize_target("   "), None);
+        assert_eq!(sanitize_target("007"), None);
+    }
+
+    #[test]
+    fn sanitize_drops_non_ascii() {
+        assert_eq!(
+            sanitize_target("Café Reverb").as_deref(),
+            Some("caf_reverb")
+        );
     }
 }

@@ -17,10 +17,11 @@ use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 use rfd::FileDialog;
 
 use crate::application::graph_service::GraphService;
+use crate::application::ports::ProjectGeneratorPort;
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
 use crate::domain::project::RecentProject;
-use crate::presentation::initial_controller::{self, InitialState};
+use crate::presentation::initial_controller::{self, InitialState, ProjectIntent};
 use crate::presentation::simulation_controller;
 use crate::presentation::window_manager::WindowManager;
 use crate::presentation::windows::{
@@ -43,6 +44,7 @@ pub struct HeadroomApp {
     sim_service: Rc<SimulatorService>,
     graph_service: Rc<GraphService>,
     recents: Rc<RefCell<RecentProjectsService>>,
+    generator: Rc<dyn ProjectGeneratorPort>,
     windows: WindowManager,
     effect_build_path: String,
 
@@ -58,11 +60,13 @@ impl HeadroomApp {
         sim_service: Rc<SimulatorService>,
         graph_service: Rc<GraphService>,
         recents: Rc<RefCell<RecentProjectsService>>,
+        generator: Rc<dyn ProjectGeneratorPort>,
     ) -> Self {
         Self {
             sim_service,
             graph_service,
             recents,
+            generator,
             windows: WindowManager::default(),
             effect_build_path: String::new(),
             screen: Screen::Splash,
@@ -113,12 +117,30 @@ impl HeadroomApp {
         );
 
         if let Some(events) = events
-            && let Some(project) = initial_controller::handle_events(state, events, &recents)
+            && let Some(intent) = initial_controller::handle_events(state, events, &recents)
         {
-            self.open_project(project);
+            self.handle_intent(intent);
         }
         if close_requested {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
+        }
+    }
+
+    /// Acts on a chosen project. `Create` generates the files first and only
+    /// records/navigates on success (staying on Initial with an inline error
+    /// otherwise, D10); `Open`/Recent record and navigate directly.
+    fn handle_intent(&mut self, intent: ProjectIntent) {
+        match intent {
+            ProjectIntent::Open(project) => self.open_project(project),
+            ProjectIntent::Create(project) => {
+                match self.generator.generate(&project.name, &project.path) {
+                    Ok(()) => {
+                        self.initial.close_modal();
+                        self.open_project(project);
+                    }
+                    Err(e) => self.initial.generation_error = Some(e.to_string()),
+                }
+            }
         }
     }
 

@@ -7,18 +7,25 @@ use eframe::egui::{self, CornerRadius, RichText, Stroke};
 
 use crate::presentation::theme;
 
-/// Mutable buffers + flags the modal reads and writes.
+/// Mutable buffers + flags the modal reads and writes, plus the caller-computed
+/// validation state (the modal itself performs no validation).
 pub struct CreateModalFields<'a> {
     pub name: &'a mut String,
     pub path: &'a mut String,
     /// Set once the user manually edits Path, so the caller stops
     /// auto-syncing it from Name.
     pub path_edited: &'a mut bool,
+    /// Inline validation message; `Some` disables **Create**.
+    pub validation: Option<&'a str>,
+    /// Error from the last failed generation attempt (shown in red, does not by
+    /// itself disable Create — the user can retry once inputs change).
+    pub generation_error: Option<&'a str>,
 }
 
 #[derive(Default)]
 pub struct CreateModalEvents {
     pub name_changed: bool,
+    pub path_changed: bool,
     pub cancelled: bool,
     pub created: bool,
 }
@@ -26,9 +33,7 @@ pub struct CreateModalEvents {
 pub fn create_project_modal(ctx: &egui::Context, fields: CreateModalFields) -> CreateModalEvents {
     let mut events = CreateModalEvents::default();
 
-    let name_valid = !fields.name.trim().is_empty();
-    let path_valid = !fields.path.trim().is_empty();
-    let valid = name_valid && path_valid;
+    let valid = fields.validation.is_none();
 
     let frame = egui::Frame::new()
         .fill(theme::DIALOG_BACKGROUND)
@@ -69,17 +74,21 @@ pub fn create_project_modal(ctx: &egui::Context, fields: CreateModalFields) -> C
             );
             if path_resp.changed() {
                 *fields.path_edited = true;
+                events.path_changed = true;
             }
 
-            // Inline validation message.
-            if !valid {
-                let msg = if !name_valid {
-                    "Enter a project name."
-                } else {
-                    "Enter a save path."
-                };
+            // Inline validation message (blocks Create) and, separately, the
+            // error from a failed generation attempt.
+            if let Some(msg) = fields.validation {
                 ui.label(
                     RichText::new(msg)
+                        .font(theme::small_font())
+                        .color(theme::ERROR_COLOR),
+                );
+            }
+            if let Some(err) = fields.generation_error {
+                ui.label(
+                    RichText::new(err)
                         .font(theme::small_font())
                         .color(theme::ERROR_COLOR),
                 );
