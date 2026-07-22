@@ -8,7 +8,11 @@ use crate::presentation::theme;
 
 pub fn show(ui: &mut egui::Ui, session: &mut GraphSession) {
     egui::CentralPanel::default().show(ui, |ui| {
-        ui.label(RichText::new("Signal Graph").font(theme::title_font()).strong());
+        ui.label(
+            RichText::new("Signal Graph")
+                .font(theme::title_font())
+                .strong(),
+        );
 
         let time_full_end = session.time_full_end();
         let has_processed = session.has_processed;

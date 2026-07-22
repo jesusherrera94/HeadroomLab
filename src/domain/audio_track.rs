@@ -32,6 +32,9 @@ impl AudioTrack {
             return Err(AudioError::UnsupportedFormat);
         }
 
-        Ok(Self { file_path, duration_seconds })
+        Ok(Self {
+            file_path,
+            duration_seconds,
+        })
     }
 }

@@ -4,9 +4,9 @@
 use eframe::egui::{self, RichText};
 
 use crate::presentation::components::molecules::error_dialog::error_dialog;
-use crate::presentation::components::molecules::transport_bar::{transport_bar, TransportEvents};
+use crate::presentation::components::molecules::transport_bar::{TransportEvents, transport_bar};
 use crate::presentation::components::organisms::hardware_controls_panel::{
-    hardware_controls_panel, HardwareEvents,
+    HardwareEvents, hardware_controls_panel,
 };
 use crate::presentation::simulation_controller::SimulatorState;
 use crate::presentation::theme;
@@ -24,7 +24,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut SimulatorState) -> SimulatorViewEvent
     egui::CentralPanel::default().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 15.0;
 
-        ui.label(RichText::new("Audio Player").font(theme::title_font()).strong());
+        ui.label(
+            RichText::new("Audio Player")
+                .font(theme::title_font())
+                .strong(),
+        );
 
         events.transport = transport_bar(
             ui,

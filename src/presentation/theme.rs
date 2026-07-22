@@ -4,9 +4,7 @@
 //! the previous Fluent-style look. Designed to be reused by future windows
 //! (e.g. the planned code-editor window).
 
-use eframe::egui::{
-    self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals,
-};
+use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
 // -- Color tokens ------------------------------------------------------------
 
@@ -36,6 +34,14 @@ pub const WAVEFORM_COLOR: Color32 = Color32::from_rgb(0x21, 0x96, 0xf3);
 pub const SPECTRUM_COLOR: Color32 = Color32::from_rgb(0xe6, 0x7e, 0x22);
 /// Plot drawing-area background (plots were rendered on white).
 pub const PLOT_BACKGROUND: Color32 = Color32::from_rgb(0x22, 0x22, 0x24);
+/// Light-blue app-mark stroke (logo, recent-badge glyph).
+pub const LOGO_STROKE: Color32 = Color32::from_rgb(0x90, 0xca, 0xf9);
+/// Inset surface for the logo tile / recent-item badge.
+pub const INSET_SURFACE: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
+/// Border of inset surfaces (logo tile, badge).
+pub const INSET_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x41);
+/// Hover highlight for list rows on dark surfaces.
+pub const ROW_HOVER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
 
 // -- Typography tokens (px, matching the previous UI markup) ------------------------
 
@@ -76,7 +82,10 @@ pub fn apply(ctx: &egui::Context) {
         (TextStyle::Body, body_font()),
         (TextStyle::Button, body_font()),
         (TextStyle::Heading, title_font()),
-        (TextStyle::Monospace, FontId::new(FONT_BODY, FontFamily::Monospace)),
+        (
+            TextStyle::Monospace,
+            FontId::new(FONT_BODY, FontFamily::Monospace),
+        ),
     ]
     .into();
 
@@ -116,10 +125,11 @@ pub fn apply(ctx: &egui::Context) {
 /// Returns a button styled as "primary" (accent-filled) when `selected`,
 /// mirroring the "primary" button styling used by switches.
 pub fn selectable_button(text: &str, selected: bool) -> egui::Button<'static> {
-    let button = egui::Button::new(
-        egui::RichText::new(text.to_owned())
-            .color(if selected { Color32::WHITE } else { Color32::from_rgb(0x20, 0x20, 0x20) }),
-    );
+    let button = egui::Button::new(egui::RichText::new(text.to_owned()).color(if selected {
+        Color32::WHITE
+    } else {
+        Color32::from_rgb(0x20, 0x20, 0x20)
+    }));
     if selected {
         button.fill(ACCENT)
     } else {

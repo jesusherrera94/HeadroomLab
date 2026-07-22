@@ -56,8 +56,7 @@ pub fn hardware_controls_panel(
             section_label(ui, "Knobs");
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                let knob_width =
-                    ((ui.available_width() - 8.0 * 5.0) / 6.0).clamp(40.0, 160.0);
+                let knob_width = ((ui.available_width() - 8.0 * 5.0) / 6.0).clamp(40.0, 160.0);
                 ui.spacing_mut().slider_width = knob_width;
                 for (index, value) in state.knob_values.iter_mut().enumerate() {
                     if knob(ui, &format!("Knob {}", index + 1), value) {

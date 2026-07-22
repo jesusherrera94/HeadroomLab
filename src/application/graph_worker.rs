@@ -1,8 +1,8 @@
 use std::cell::Cell;
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
-use crate::application::graph_service::{compute_graph_data, GraphComputeRequest, GraphData};
+use crate::application::graph_service::{GraphComputeRequest, GraphData, compute_graph_data};
 
 /// Runs graph recomputes on a dedicated background thread so the UI event
 /// loop (and therefore the simulator controls) never blocks on plugin renders
@@ -62,7 +62,11 @@ fn worker_loop(job_rx: Receiver<GraphComputeRequest>, result_tx: Sender<GraphDat
     // Original waveform/spectrum cache, keyed by the request's audio generation:
     // knob changes never alter the original signal, so its FFT is reused until
     // a new audio file is loaded.
-    let mut cached_original: Option<(u64, crate::domain::signal::Waveform, crate::domain::signal::Spectrum)> = None;
+    let mut cached_original: Option<(
+        u64,
+        crate::domain::signal::Waveform,
+        crate::domain::signal::Spectrum,
+    )> = None;
 
     while let Ok(request) = job_rx.recv() {
         let reusable = cached_original

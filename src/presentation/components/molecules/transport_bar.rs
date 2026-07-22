@@ -28,14 +28,27 @@ pub fn transport_bar(
             events.upload_clicked = true;
         }
         let play_label = if is_playing { "Stop" } else { "Play" };
-        if ui.add_enabled(has_audio, egui::Button::new(play_label)).clicked() {
+        if ui
+            .add_enabled(has_audio, egui::Button::new(play_label))
+            .clicked()
+        {
             events.play_toggled = true;
         }
-        let bypass_label = if is_bypassed { "Bypassed [ON]" } else { "Bypass [OFF]" };
-        if ui.add_enabled(has_audio, egui::Button::new(bypass_label)).clicked() {
+        let bypass_label = if is_bypassed {
+            "Bypassed [ON]"
+        } else {
+            "Bypass [OFF]"
+        };
+        if ui
+            .add_enabled(has_audio, egui::Button::new(bypass_label))
+            .clicked()
+        {
             events.bypass_toggled = true;
         }
-        if ui.add_enabled(has_audio, egui::Button::new("View graph")).clicked() {
+        if ui
+            .add_enabled(has_audio, egui::Button::new("View graph"))
+            .clicked()
+        {
             events.view_graph_clicked = true;
         }
     });

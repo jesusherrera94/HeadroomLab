@@ -1,20 +1,19 @@
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Stream, StreamConfig};
 use crate::application::ports::{AudioEnginePort, AudioMetadata, AudioSnapshot};
 use crate::domain::audio_processor::AudioProcessor;
 use crate::infrastructure::audio_decoder::decode_audio_file;
-
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Stream, StreamConfig};
+use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 
 // ── Shared state (audio thread + main thread) ─────────────────────────────────
 struct PlaybackState {
     // Arc so `snapshot_samples` can hand out the buffer without copying it
     // while the state mutex is held (the audio callback try_locks this mutex).
-    samples: Arc<Vec<f32>>,    // decoded PCM, interleaved, normalised to [-1, 1]
+    samples: Arc<Vec<f32>>, // decoded PCM, interleaved, normalised to [-1, 1]
     sample_rate: u32,
     channels: u16,
-    playhead: usize,           // current sample index (interleaved)
+    playhead: usize, // current sample index (interleaved)
     is_playing: bool,
     is_bypassed: bool,
     processors: Vec<Box<dyn AudioProcessor>>,
@@ -33,7 +32,6 @@ impl PlaybackState {
     }
 }
 
-
 pub struct AudioEngine {
     state: Arc<Mutex<PlaybackState>>,
     stream: RefCell<Option<Stream>>, // main-thread only
@@ -49,7 +47,9 @@ impl AudioEngine {
 
     fn rebuild_stream(&self) -> Result<(), String> {
         let host = cpal::default_host();
-        let device = host.default_output_device().ok_or("No output device available")?;
+        let device = host
+            .default_output_device()
+            .ok_or("No output device available")?;
         let config: StreamConfig = {
             let state = self.state.lock().unwrap();
             StreamConfig {
@@ -76,7 +76,6 @@ impl AudioEngine {
         Ok(())
     }
 }
-
 
 fn fill_output(output: &mut [f32], state_arc: &Arc<Mutex<PlaybackState>>) {
     let mut state = match state_arc.try_lock() {
@@ -113,8 +112,7 @@ fn fill_output(output: &mut [f32], state_arc: &Arc<Mutex<PlaybackState>>) {
 
 impl AudioEnginePort for AudioEngine {
     fn load_file(&self, path: &str) -> Result<AudioMetadata, String> {
-        let (samples, sample_rate, channels, duration_seconds, format) =
-            decode_audio_file(path)?;
+        let (samples, sample_rate, channels, duration_seconds, format) = decode_audio_file(path)?;
         {
             let mut state = self.state.lock().unwrap();
             state.samples = Arc::new(samples);
@@ -149,8 +147,8 @@ impl AudioEnginePort for AudioEngine {
 
     fn seek(&self, time_seconds: f32) {
         let mut state = self.state.lock().unwrap();
-        let sample_pos = (time_seconds * state.sample_rate as f32) as usize
-            * state.channels as usize;
+        let sample_pos =
+            (time_seconds * state.sample_rate as f32) as usize * state.channels as usize;
         state.playhead = sample_pos.min(state.samples.len());
     }
 

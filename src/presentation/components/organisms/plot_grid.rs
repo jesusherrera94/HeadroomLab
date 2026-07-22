@@ -19,7 +19,12 @@ pub struct PaneResets {
 impl Default for PaneResets {
     fn default() -> Self {
         // Start at the full view, like the window's original initial properties.
-        Self { orig_time: true, orig_freq: true, proc_time: true, proc_freq: true }
+        Self {
+            orig_time: true,
+            orig_freq: true,
+            proc_time: true,
+            proc_freq: true,
+        }
     }
 }
 

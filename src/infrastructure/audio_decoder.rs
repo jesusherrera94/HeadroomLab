@@ -6,10 +6,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-pub(crate) fn decode_audio_file(
-    path: &str,
-) -> Result<(Vec<f32>, u32, u16, f32, String), String> {
-
+pub(crate) fn decode_audio_file(path: &str) -> Result<(Vec<f32>, u32, u16, f32, String), String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -23,22 +20,22 @@ pub(crate) fn decode_audio_file(
     hint.with_extension(&extension);
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
         .map_err(|e| e.to_string())?;
 
     let mut format = probed.format;
-    let track = format
-        .default_track()
-        .ok_or("No audio track found")?;
+    let track = format.default_track().ok_or("No audio track found")?;
 
     let codec_params = track.codec_params.clone();
     let track_id = track.id;
 
     let sample_rate = codec_params.sample_rate.ok_or("Unknown sample rate")?;
-    let channels = codec_params
-        .channels
-        .map(|c| c.count() as u16)
-        .unwrap_or(2);
+    let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
@@ -63,5 +60,11 @@ pub(crate) fn decode_audio_file(
 
     let duration_seconds = all_samples.len() as f32 / (sample_rate as f32 * channels as f32);
 
-    Ok((all_samples, sample_rate, channels, duration_seconds, extension))
+    Ok((
+        all_samples,
+        sample_rate,
+        channels,
+        duration_seconds,
+        extension,
+    ))
 }

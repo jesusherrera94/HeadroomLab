@@ -1,5 +1,27 @@
 use crate::domain::plugin::PluginError;
+use crate::domain::project::RecentProject;
 // Port: the application depends on this abstraction.
+
+/// Failure persisting the recents list. Save failures are logged, never
+/// surfaced to the UI, so a single opaque variant is enough.
+#[derive(Debug)]
+pub struct RecentProjectsError(pub String);
+
+impl std::fmt::Display for RecentProjectsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Failed to persist recent projects: {}", self.0)
+    }
+}
+
+impl std::error::Error for RecentProjectsError {}
+
+/// Persistence boundary for the recent-projects list. A read error yields an
+/// empty list (never blocks startup); a write error is returned so the service
+/// can log it.
+pub trait RecentProjectsStore {
+    fn load(&self) -> Vec<RecentProject>;
+    fn save(&self, items: &[RecentProject]) -> Result<(), RecentProjectsError>;
+}
 
 pub struct AudioMetadata {
     pub duration_seconds: f32,

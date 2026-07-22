@@ -1,10 +1,10 @@
+use crate::application::ports::AudioEnginePort;
+use crate::domain::audio_track::{AudioError, AudioTrack};
+use crate::domain::plugin::{EffectPlugin, PluginError};
+use crate::infrastructure::dylib_plugin::{DylibPlugin, SharedPluginProcessor};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use crate::domain::audio_track::{AudioTrack, AudioError};
-use crate::domain::plugin::{EffectPlugin, PluginError};
-use crate::application::ports::AudioEnginePort;
-use crate::infrastructure::dylib_plugin::{DylibPlugin, SharedPluginProcessor};
 
 /// Sample rate handed to the plugin at creation time. The simulator loads the
 /// effect before any audio file is chosen, so we use the engine's default rate.
@@ -66,24 +66,42 @@ impl SimulatorService {
 
     pub fn handle_file_upload(&self, file_path: String) -> Result<f32, AudioError> {
         // e.g., /Users/jesusherrera/development/HeadroomLab/test_samples/guitar_riff.wav
-        
-        let meta = self.audio_engine.load_file(&file_path)
+
+        let meta = self
+            .audio_engine
+            .load_file(&file_path)
             .map_err(|_| AudioError::UnsupportedFormat)?; // Simplified mapping
-            
+
         let track = AudioTrack::validate_and_create(
-            file_path, meta.duration_seconds, meta.sample_rate, meta.bit_depth, &meta.format
+            file_path,
+            meta.duration_seconds,
+            meta.sample_rate,
+            meta.bit_depth,
+            &meta.format,
         )?;
-        
+
         let duration = track.duration_seconds;
         *self.current_track.borrow_mut() = Some(track);
-        
+
         Ok(duration)
     }
 
-    pub fn play(&self) { self.audio_engine.play(); }
-    pub fn stop(&self) { self.audio_engine.stop(); }
-    pub fn toggle_bypass(&self, state: bool) { self.audio_engine.set_bypass(state); }
-    pub fn seek_to(&self, time: f32) { self.audio_engine.seek(time); }
-    pub fn current_position(&self) -> f32 { self.audio_engine.current_position() }
-    pub fn is_playing(&self) -> bool      { self.audio_engine.is_playing() }
+    pub fn play(&self) {
+        self.audio_engine.play();
+    }
+    pub fn stop(&self) {
+        self.audio_engine.stop();
+    }
+    pub fn toggle_bypass(&self, state: bool) {
+        self.audio_engine.set_bypass(state);
+    }
+    pub fn seek_to(&self, time: f32) {
+        self.audio_engine.seek(time);
+    }
+    pub fn current_position(&self) -> f32 {
+        self.audio_engine.current_position()
+    }
+    pub fn is_playing(&self) -> bool {
+        self.audio_engine.is_playing()
+    }
 }
