@@ -30,8 +30,7 @@ impl DylibPlugin {
         }
 
         unsafe {
-            let library =
-                Library::new(path).map_err(|e| PluginError::LoadFailed(e.to_string()))?;
+            let library = Library::new(path).map_err(|e| PluginError::LoadFailed(e.to_string()))?;
 
             let fn_create: FnCreate = load_symbol(&library, b"hl_create\0", "hl_create")?;
             let fn_destroy: FnDestroy = load_symbol(&library, b"hl_destroy\0", "hl_destroy")?;

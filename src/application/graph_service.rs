@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::application::ports::{AudioEnginePort, AudioSnapshot};
 use crate::domain::audio_processor::AudioProcessor;
 use crate::domain::plugin::EffectPlugin;
-use crate::domain::signal::{compute_spectrum, Spectrum, Waveform};
+use crate::domain::signal::{Spectrum, Waveform, compute_spectrum};
 use crate::infrastructure::dylib_plugin::DylibPlugin;
 
 /// Everything the graph window needs to redraw all four plots.
@@ -169,7 +169,8 @@ fn render_processed(request: &GraphComputeRequest) -> Result<Waveform, String> {
         .ok_or_else(|| "No effect loaded yet".to_string())?;
 
     let snapshot = &request.snapshot;
-    let mut plugin = DylibPlugin::load(&path, snapshot.sample_rate as f32).map_err(|e| e.to_string())?;
+    let mut plugin =
+        DylibPlugin::load(&path, snapshot.sample_rate as f32).map_err(|e| e.to_string())?;
 
     for (index, value) in request.knob_values.iter().enumerate() {
         plugin.set_knob(index, *value);
@@ -183,5 +184,9 @@ fn render_processed(request: &GraphComputeRequest) -> Result<Waveform, String> {
 
     let mut buffer = snapshot.samples.as_ref().clone();
     plugin.process(&mut buffer, snapshot.channels, snapshot.sample_rate);
-    Ok(Waveform::from_interleaved(&buffer, snapshot.channels, snapshot.sample_rate))
+    Ok(Waveform::from_interleaved(
+        &buffer,
+        snapshot.channels,
+        snapshot.sample_rate,
+    ))
 }

@@ -6,7 +6,7 @@
 use eframe::egui;
 use egui_plot::{AxisHints, HoverPosition, Line, Plot, PlotBounds, PlotPoints, PlotUi};
 
-use crate::domain::signal::{Spectrum, Waveform, DB_FLOOR};
+use crate::domain::signal::{DB_FLOOR, Spectrum, Waveform};
 use crate::presentation::theme;
 
 const PLOT_HEIGHT_PX: f32 = 300.0;

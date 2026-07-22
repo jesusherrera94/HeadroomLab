@@ -2,7 +2,7 @@
 // Reusable for any feature that needs to look at a buffer of audio samples.
 use std::f32::consts::PI;
 
-use rustfft::{num_complex::Complex32, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex32};
 
 /// A mono signal, normalised to [-1.0, 1.0].
 #[derive(Clone)]
@@ -19,7 +19,10 @@ impl Waveform {
             .chunks(channels)
             .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
             .collect();
-        Self { samples: mono, sample_rate }
+        Self {
+            samples: mono,
+            sample_rate,
+        }
     }
 
     pub fn duration_seconds(&self) -> f32 {
@@ -48,7 +51,10 @@ pub const DB_FLOOR: f32 = -80.0;
 pub fn compute_spectrum(waveform: &Waveform) -> Spectrum {
     let n = waveform.samples.len();
     if n == 0 || waveform.sample_rate == 0 {
-        return Spectrum { frequencies_hz: vec![], magnitudes_db: vec![] };
+        return Spectrum {
+            frequencies_hz: vec![],
+            magnitudes_db: vec![],
+        };
     }
 
     // 1. Apply a Hann window to reduce spectral leakage.
@@ -88,5 +94,8 @@ pub fn compute_spectrum(waveform: &Waveform) -> Spectrum {
         magnitudes_db.push(db);
     }
 
-    Spectrum { frequencies_hz, magnitudes_db }
+    Spectrum {
+        frequencies_hz,
+        magnitudes_db,
+    }
 }
