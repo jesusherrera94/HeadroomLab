@@ -1,3 +1,4 @@
+pub mod file_icon;
 pub mod footswitch;
 pub mod knob;
 pub mod logo;

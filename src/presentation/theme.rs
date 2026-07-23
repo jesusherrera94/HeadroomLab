@@ -42,6 +42,9 @@ pub const INSET_SURFACE: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
 pub const INSET_BORDER: Color32 = Color32::from_rgb(0x3a, 0x3a, 0x41);
 /// Hover highlight for list rows on dark surfaces.
 pub const ROW_HOVER: Color32 = Color32::from_rgb(0x26, 0x26, 0x2b);
+/// Fill of the active editor tab (matches the code-area background so the
+/// selected buffer reads as continuous with its content).
+pub const TAB_ACTIVE_BACKGROUND: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1f);
 
 // -- Typography tokens (px, matching the previous UI markup) ------------------------
 
