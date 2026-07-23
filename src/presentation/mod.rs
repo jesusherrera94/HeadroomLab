@@ -1,5 +1,6 @@
 pub mod app_controller;
 pub mod components;
+pub mod editor_controller;
 pub mod graph_controller;
 pub mod initial_controller;
 pub mod simulation_controller;

@@ -10,22 +10,23 @@
 //! descendant viewport is visible, so the child viewports keep rendering.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
-use rfd::FileDialog;
 
 use crate::application::graph_service::GraphService;
 use crate::application::ports::ProjectGeneratorPort;
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
-use crate::domain::project::RecentProject;
+use crate::domain::project::{RecentProject, sanitize_target};
+use crate::presentation::editor_controller::{self, EditorState};
 use crate::presentation::initial_controller::{self, InitialState, ProjectIntent};
 use crate::presentation::simulation_controller;
 use crate::presentation::window_manager::WindowManager;
 use crate::presentation::windows::{
-    app_window, graph_window, initial_window, simulator_window, splash_window,
+    editor_window, graph_window, initial_window, simulator_window, splash_window,
 };
 
 /// Cadence of the playhead/graph sync, matching the old UI timers.
@@ -46,13 +47,12 @@ pub struct HeadroomApp {
     recents: Rc<RefCell<RecentProjectsService>>,
     generator: Rc<dyn ProjectGeneratorPort>,
     windows: WindowManager,
-    effect_build_path: String,
 
     screen: Screen,
     splash_started: Instant,
     initial: InitialState,
-    #[allow(dead_code)] // carried for the real Editor; placeholder ignores it for now.
     current_project: Option<RecentProject>,
+    editor: Option<EditorState>,
 }
 
 impl HeadroomApp {
@@ -68,11 +68,11 @@ impl HeadroomApp {
             recents,
             generator,
             windows: WindowManager::default(),
-            effect_build_path: String::new(),
             screen: Screen::Splash,
             splash_started: Instant::now(),
             initial: InitialState::default(),
             current_project: None,
+            editor: None,
         }
     }
 
@@ -144,20 +144,29 @@ impl HeadroomApp {
         }
     }
 
-    /// Records the project in Recents and navigates to the Editor placeholder.
+    /// Records the project in Recents and navigates to the Editor.
     fn open_project(&mut self, project: RecentProject) {
         self.recents.borrow_mut().record(project.clone());
+        self.editor = Some(EditorState::new(&project));
         self.current_project = Some(project);
         self.screen = Screen::Editor;
         // The Initial viewport stops being shown next frame (window closes).
     }
 
-    // -- Editor (placeholder = the reused app_window) ----------------------
+    // -- Editor (IDE shell) ------------------------------------------------
 
     fn show_editor_viewport(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.editor.as_mut() else {
+            return;
+        };
+
         let viewport_id = ViewportId::from_hash_of("editor_window");
-        let effect_build_path = &mut self.effect_build_path;
-        let mut events = app_window::AppWindowEvents::default();
+        if state.focus_requested {
+            state.focus_requested = false;
+            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+        }
+
+        let mut requests = editor_controller::EditorRequests::default();
         let mut close_requested = false;
 
         ctx.show_viewport_immediate(
@@ -166,15 +175,15 @@ impl HeadroomApp {
                 .with_title("HeadroomLab - Editor")
                 .with_inner_size([1000.0, 640.0]),
             |ui, _class| {
-                events = app_window::show(ui, effect_build_path);
+                let events = editor_window::show(ui, state);
+                requests = editor_controller::handle_events(state, events);
                 close_requested = ui.ctx().input(|i| i.viewport().close_requested());
             },
         );
 
-        if events.browse_clicked {
-            self.browse_effect_build();
-        }
-        if events.launch_clicked {
+        // "Open emulator" launches the simulator on the project's built dylib.
+        // "Build & run" and "Compile" are wired to the terminal in a later task.
+        if requests.open_emulator {
             self.launch_simulator();
         }
         if close_requested {
@@ -182,17 +191,17 @@ impl HeadroomApp {
         }
     }
 
-    fn browse_effect_build(&mut self) {
-        if let Some(path) = FileDialog::new()
-            .add_filter("Dynamic Library", &["dylib", "so", "dll"])
-            .pick_file()
-        {
-            self.effect_build_path = path.display().to_string();
-        }
-    }
-
+    /// Opens the simulator on the current project's built dynamic library
+    /// (`<project>/build/lib<target>.<ext>`). A missing/unbuilt library surfaces
+    /// through the simulator's existing error banner.
     fn launch_simulator(&mut self) {
-        let path = self.effect_build_path.clone();
+        let path = self
+            .current_project
+            .as_ref()
+            .and_then(effect_dylib_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
         let state = self.windows.open_simulator();
         match self.sim_service.load_plugin(&path) {
             Ok(()) => self.graph_service.set_plugin_path(&path),
@@ -272,6 +281,27 @@ impl HeadroomApp {
     }
 }
 
+/// Derives the path to a project's built simulator library, matching the
+/// generated `Makefile` (`build/lib<target>.<ext>`, target = sanitized name,
+/// ext = platform shared-library suffix). Returns `None` when the name yields
+/// no valid target.
+fn effect_dylib_path(project: &RecentProject) -> Option<PathBuf> {
+    let target = sanitize_target(&project.name)?;
+    let ext = if cfg!(target_os = "windows") {
+        "dll"
+    } else if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    Some(
+        project
+            .path
+            .join("build")
+            .join(format!("lib{target}.{ext}")),
+    )
+}
+
 impl eframe::App for HeadroomApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -293,5 +323,34 @@ impl eframe::App for HeadroomApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             self.windows.close_all();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dylib_path_sanitizes_name_and_uses_platform_ext() {
+        let project = RecentProject::new("My Fuzz", "/tmp/projects/my-fuzz");
+        let ext = if cfg!(target_os = "windows") {
+            "dll"
+        } else if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
+        };
+        assert_eq!(
+            effect_dylib_path(&project),
+            Some(PathBuf::from(format!(
+                "/tmp/projects/my-fuzz/build/libmy_fuzz.{ext}"
+            )))
+        );
+    }
+
+    #[test]
+    fn dylib_path_none_when_name_has_no_valid_target() {
+        let project = RecentProject::new("###", "/tmp/x");
+        assert_eq!(effect_dylib_path(&project), None);
     }
 }
