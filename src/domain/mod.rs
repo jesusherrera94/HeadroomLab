@@ -1,5 +1,6 @@
 pub mod audio_processor;
 pub mod audio_track;
+pub mod file_system;
 pub mod hardware_platform;
 pub mod plugin;
 pub mod project;

@@ -1,3 +1,4 @@
+pub mod confirm_modal;
 pub mod create_project_modal;
 pub mod editor_tab;
 pub mod error_dialog;

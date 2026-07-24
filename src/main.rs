@@ -6,13 +6,15 @@ use eframe::egui::ViewportBuilder;
 
 use HeadroomLab::{
     application::{
+        file_system_service::FileSystemService,
         graph_service::GraphService,
-        ports::{AudioEnginePort, ProjectFileSystemPort, ProjectGeneratorPort},
+        ports::{AudioEnginePort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort},
         recent_projects_service::RecentProjectsService,
         simulator_service::SimulatorService,
     },
     infrastructure::{
-        audio_engine::AudioEngine, project_generator::TemplateProjectGenerator,
+        audio_engine::AudioEngine, notify_file_watcher::NotifyFileWatcher,
+        project_generator::TemplateProjectGenerator,
         recent_projects_store::FileRecentProjectsStore,
         std_fs_project_file_system::StdFsProjectFileSystem,
     },
@@ -31,6 +33,8 @@ fn main() -> eframe::Result<()> {
     let generator: Rc<dyn ProjectGeneratorPort> = Rc::new(TemplateProjectGenerator::new());
 
     let file_system: Rc<dyn ProjectFileSystemPort> = Rc::new(StdFsProjectFileSystem::new());
+    let fs_service = Rc::new(FileSystemService::new(file_system.clone()));
+    let file_watcher: Rc<dyn FileWatcherPort> = Rc::new(NotifyFileWatcher::new());
 
     // The root window is the Splash screen.
     let options = eframe::NativeOptions {
@@ -53,6 +57,8 @@ fn main() -> eframe::Result<()> {
                 recents,
                 generator,
                 file_system,
+                fs_service,
+                file_watcher,
             )))
         }),
     )
