@@ -20,7 +20,7 @@ pub fn editor_tab(ui: &mut egui::Ui, tab: &EditorTab, active: bool) -> bool {
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                file_icon(ui, tab.kind);
+                file_icon(ui, tab.icon);
                 let name_color = if active {
                     egui::Color32::WHITE
                 } else {

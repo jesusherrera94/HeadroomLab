@@ -74,6 +74,15 @@ pub fn title_font() -> FontId {
     FontId::new(FONT_TITLE, FontFamily::Proportional)
 }
 
+/// Merges the Phosphor icon font into the context so file-explorer/tab icon
+/// glyphs render. Phosphor is inserted as a fallback in the Proportional
+/// family, so existing text is unaffected. Call once at startup.
+pub fn install_icon_font(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    ctx.set_fonts(fonts);
+}
+
 /// Installs the app-wide style: a light, Fluent-like theme matching the
 /// previous UI appearance.
 pub fn apply(ctx: &egui::Context) {
