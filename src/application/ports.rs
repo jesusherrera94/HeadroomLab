@@ -1,3 +1,6 @@
+use std::path::{Path, PathBuf};
+
+use crate::domain::file_system::FileSystemError;
 use crate::domain::plugin::PluginError;
 use crate::domain::project::RecentProject;
 // Port: the application depends on this abstraction.
@@ -49,20 +52,51 @@ pub trait ProjectGeneratorPort {
 /// One entry read from a project directory (a single, non-recursive level).
 pub struct DirEntryInfo {
     pub name: String,
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     pub is_dir: bool,
 }
 
-/// Reads project directories on demand for the file-explorer tree. Injected into
+/// Reads and mutates project files/directories for the explorer. Injected into
 /// the presentation layer so the UI never touches `std::fs` directly (keeping
-/// the hexagonal layering intact). A future file-mutation task can extend this
-/// port with create/rename/remove operations.
+/// the hexagonal layering intact). Mutations return real errors; `read_dir`
+/// stays lenient (empty on failure) so the tree renders regardless.
 pub trait ProjectFileSystemPort {
     /// Reads the immediate children of `dir` (one level, not recursive).
     /// Entries are returned unsorted; ordering is the caller's concern. Any
     /// error (permissions, deleted mid-session) yields an empty list, so an
     /// unreadable folder renders as empty rather than crashing.
-    fn read_dir(&self, dir: &std::path::Path) -> Vec<DirEntryInfo>;
+    fn read_dir(&self, dir: &Path) -> Vec<DirEntryInfo>;
+
+    /// Whether `path` currently exists (used for duplicate/existence checks).
+    fn exists(&self, path: &Path) -> bool;
+
+    /// Creates an empty file `name` inside `dir`; returns the new path.
+    fn create_file(&self, dir: &Path, name: &str) -> Result<PathBuf, FileSystemError>;
+
+    /// Creates a directory `name` inside `dir`; returns the new path.
+    fn create_dir(&self, dir: &Path, name: &str) -> Result<PathBuf, FileSystemError>;
+
+    /// Renames the entry at `path` to `new_name` (kept in the same parent);
+    /// returns the new path.
+    fn rename(&self, path: &Path, new_name: &str) -> Result<PathBuf, FileSystemError>;
+
+    /// Moves `path` (file or directory, recursively) to the OS trash.
+    fn delete_to_trash(&self, path: &Path) -> Result<(), FileSystemError>;
+
+    /// Reveals `path` in the platform file manager (Finder / Explorer).
+    fn reveal(&self, path: &Path) -> Result<(), FileSystemError>;
+}
+
+/// A running recursive filesystem watch. `drain` is non-blocking and returns the
+/// paths that changed since the last call; the concrete watcher (e.g. `notify`)
+/// is hidden behind this trait so no external types leak through the port.
+pub trait FileWatchSession {
+    fn drain(&self) -> Vec<PathBuf>;
+}
+
+/// Starts watching a project directory tree for external changes.
+pub trait FileWatcherPort {
+    fn watch(&self, root: &Path) -> Result<Box<dyn FileWatchSession>, FileSystemError>;
 }
 
 pub struct AudioMetadata {

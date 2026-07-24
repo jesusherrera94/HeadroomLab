@@ -1,3 +1,4 @@
+pub mod file_system_service;
 pub mod graph_service;
 pub mod graph_worker;
 pub mod ports;

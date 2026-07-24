@@ -5,7 +5,11 @@
 
 use eframe::egui::{self, RichText};
 
+use crate::presentation::components::molecules::confirm_modal::{
+    ConfirmModalContent, confirm_modal,
+};
 use crate::presentation::components::molecules::editor_tab::editor_tab;
+use crate::presentation::components::molecules::error_dialog::error_dialog;
 use crate::presentation::components::organisms::editor_toolbar::editor_toolbar;
 use crate::presentation::components::organisms::file_explorer::file_explorer;
 use crate::presentation::components::organisms::status_bar::status_bar;
@@ -29,16 +33,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         status_bar(ui, &state.project_name);
     });
 
-    // Explorer (full-height, left, between toolbar and status bar). Folder
-    // clicks toggle/lazy-load; file clicks select. Opening files into tabs
-    // arrives in a later task.
+    // Explorer (full-height, left, between toolbar and status bar). Handles
+    // open/select, inline create/rename, delete requests and reveals.
     egui::Panel::left("explorer")
         .resizable(true)
         .default_size(220.0)
         .show(ui, |ui| {
-            let explorer = file_explorer(ui, &state.tree);
-            events.explorer_expand = explorer.expand;
-            events.explorer_select = explorer.select;
+            events.explorer = file_explorer(ui, &state.tree, &mut state.explorer);
         });
 
     // Terminal (bottom, above the status bar, right of the explorer).
@@ -54,7 +55,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         egui::Panel::top("tabs").show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (index, tab) in state.tabs.iter().enumerate() {
-                    if editor_tab(ui, tab, index == state.active_tab) {
+                    let tab = editor_tab(ui, tab, index == state.active_tab);
+                    if tab.close_clicked {
+                        events.tab_closed = Some(index);
+                    } else if tab.clicked {
                         events.tab_clicked = Some(index);
                     }
                 }
@@ -66,17 +70,43 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         });
     });
 
+    // Modals over the whole editor: confirmation takes priority over the error
+    // banner. Both are reusable, state-driven components.
+    if let Some(confirm) = &state.explorer.pending_confirm {
+        let modal = confirm_modal(
+            ui.ctx(),
+            ConfirmModalContent {
+                title: &confirm.title,
+                message: &confirm.message,
+                confirm_label: &confirm.confirm_label,
+                destructive: true,
+            },
+        );
+        events.confirm_confirmed = modal.confirmed;
+        events.confirm_cancelled = modal.cancelled;
+    } else if let Some(error) = &state.explorer.error
+        && error_dialog(ui.ctx(), error)
+    {
+        events.error_dismissed = true;
+    }
+
     events
 }
 
 /// Static placeholder code for the active tab. The real editable, syntax-
 /// highlighted view arrives in Day 7.
 fn code_area(ui: &mut egui::Ui, state: &EditorState) {
-    let title = state
-        .tabs
-        .get(state.active_tab)
-        .map(|t| t.name.as_str())
-        .unwrap_or("");
+    let Some(tab) = state.tabs.get(state.active_tab) else {
+        ui.centered_and_justified(|ui| {
+            ui.label(
+                RichText::new("Select a file to open it")
+                    .font(theme::body_font())
+                    .color(theme::MUTED_ON_DARK),
+            );
+        });
+        return;
+    };
+    let title = tab.name.as_str();
 
     egui::ScrollArea::both()
         .auto_shrink([false, false])

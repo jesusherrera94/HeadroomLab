@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 
+use crate::application::file_system_service::FileSystemService;
 use crate::application::graph_service::GraphService;
-use crate::application::ports::{ProjectFileSystemPort, ProjectGeneratorPort};
+use crate::application::ports::{FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort};
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
 use crate::domain::project::{RecentProject, sanitize_target};
@@ -47,6 +48,8 @@ pub struct HeadroomApp {
     recents: Rc<RefCell<RecentProjectsService>>,
     generator: Rc<dyn ProjectGeneratorPort>,
     file_system: Rc<dyn ProjectFileSystemPort>,
+    fs_service: Rc<FileSystemService>,
+    file_watcher: Rc<dyn FileWatcherPort>,
     windows: WindowManager,
 
     screen: Screen,
@@ -63,6 +66,8 @@ impl HeadroomApp {
         recents: Rc<RefCell<RecentProjectsService>>,
         generator: Rc<dyn ProjectGeneratorPort>,
         file_system: Rc<dyn ProjectFileSystemPort>,
+        fs_service: Rc<FileSystemService>,
+        file_watcher: Rc<dyn FileWatcherPort>,
     ) -> Self {
         Self {
             sim_service,
@@ -70,6 +75,8 @@ impl HeadroomApp {
             recents,
             generator,
             file_system,
+            fs_service,
+            file_watcher,
             windows: WindowManager::default(),
             screen: Screen::Splash,
             splash_started: Instant::now(),
@@ -150,7 +157,12 @@ impl HeadroomApp {
     /// Records the project in Recents and navigates to the Editor.
     fn open_project(&mut self, project: RecentProject) {
         self.recents.borrow_mut().record(project.clone());
-        self.editor = Some(EditorState::new(&project, self.file_system.clone()));
+        self.editor = Some(EditorState::new(
+            &project,
+            self.file_system.clone(),
+            self.fs_service.clone(),
+            self.file_watcher.clone(),
+        ));
         self.current_project = Some(project);
         self.screen = Screen::Editor;
         // The Initial viewport stops being shown next frame (window closes).
@@ -162,6 +174,9 @@ impl HeadroomApp {
         let Some(state) = self.editor.as_mut() else {
             return;
         };
+
+        // Drain the filesystem watcher and refresh any changed directories.
+        editor_controller::tick(state);
 
         let viewport_id = ViewportId::from_hash_of("editor_window");
         if state.focus_requested {
