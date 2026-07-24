@@ -29,13 +29,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         status_bar(ui, &state.project_name);
     });
 
-    // Explorer (full-height, left, between toolbar and status bar). Clicks are
-    // visual-only in HL9; opening files into tabs arrives with the real tree.
+    // Explorer (full-height, left, between toolbar and status bar). Folder
+    // clicks toggle/lazy-load; file clicks select. Opening files into tabs
+    // arrives in a later task.
     egui::Panel::left("explorer")
         .resizable(true)
         .default_size(220.0)
         .show(ui, |ui| {
-            let _clicked = file_explorer(ui, &state.tree);
+            let explorer = file_explorer(ui, &state.tree);
+            events.explorer_expand = explorer.expand;
+            events.explorer_select = explorer.select;
         });
 
     // Terminal (bottom, above the status bar, right of the explorer).

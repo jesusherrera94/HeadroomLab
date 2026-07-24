@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 
 use crate::application::graph_service::GraphService;
-use crate::application::ports::ProjectGeneratorPort;
+use crate::application::ports::{ProjectFileSystemPort, ProjectGeneratorPort};
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
 use crate::domain::project::{RecentProject, sanitize_target};
@@ -46,6 +46,7 @@ pub struct HeadroomApp {
     graph_service: Rc<GraphService>,
     recents: Rc<RefCell<RecentProjectsService>>,
     generator: Rc<dyn ProjectGeneratorPort>,
+    file_system: Rc<dyn ProjectFileSystemPort>,
     windows: WindowManager,
 
     screen: Screen,
@@ -61,12 +62,14 @@ impl HeadroomApp {
         graph_service: Rc<GraphService>,
         recents: Rc<RefCell<RecentProjectsService>>,
         generator: Rc<dyn ProjectGeneratorPort>,
+        file_system: Rc<dyn ProjectFileSystemPort>,
     ) -> Self {
         Self {
             sim_service,
             graph_service,
             recents,
             generator,
+            file_system,
             windows: WindowManager::default(),
             screen: Screen::Splash,
             splash_started: Instant::now(),
@@ -147,7 +150,7 @@ impl HeadroomApp {
     /// Records the project in Recents and navigates to the Editor.
     fn open_project(&mut self, project: RecentProject) {
         self.recents.borrow_mut().record(project.clone());
-        self.editor = Some(EditorState::new(&project));
+        self.editor = Some(EditorState::new(&project, self.file_system.clone()));
         self.current_project = Some(project);
         self.screen = Screen::Editor;
         // The Initial viewport stops being shown next frame (window closes).

@@ -46,6 +46,25 @@ pub trait ProjectGeneratorPort {
     fn generate(&self, name: &str, path: &std::path::Path) -> Result<(), ProjectGenerationError>;
 }
 
+/// One entry read from a project directory (a single, non-recursive level).
+pub struct DirEntryInfo {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub is_dir: bool,
+}
+
+/// Reads project directories on demand for the file-explorer tree. Injected into
+/// the presentation layer so the UI never touches `std::fs` directly (keeping
+/// the hexagonal layering intact). A future file-mutation task can extend this
+/// port with create/rename/remove operations.
+pub trait ProjectFileSystemPort {
+    /// Reads the immediate children of `dir` (one level, not recursive).
+    /// Entries are returned unsorted; ordering is the caller's concern. Any
+    /// error (permissions, deleted mid-session) yields an empty list, so an
+    /// unreadable folder renders as empty rather than crashing.
+    fn read_dir(&self, dir: &std::path::Path) -> Vec<DirEntryInfo>;
+}
+
 pub struct AudioMetadata {
     pub duration_seconds: f32,
     pub sample_rate: u32,

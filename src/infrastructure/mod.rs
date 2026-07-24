@@ -4,3 +4,4 @@ pub mod dylib_plugin;
 pub mod hothouse_hal;
 pub mod project_generator;
 pub mod recent_projects_store;
+pub mod std_fs_project_file_system;
