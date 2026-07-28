@@ -85,6 +85,19 @@ pub trait ProjectFileSystemPort {
 
     /// Reveals `path` in the platform file manager (Finder / Explorer).
     fn reveal(&self, path: &Path) -> Result<(), FileSystemError>;
+
+    /// Reads the whole file as raw bytes. Deciding whether those bytes are
+    /// editable text, a binary, or simply too big is the domain's job
+    /// (`domain::text_document::classify`), not the adapter's.
+    fn read_file(&self, path: &Path) -> Result<Vec<u8>, FileSystemError>;
+
+    /// Overwrites `path` with `contents`, creating the file if it has since been
+    /// deleted (a dirty buffer must always be able to save itself back).
+    fn write_file(&self, path: &Path, contents: &[u8]) -> Result<(), FileSystemError>;
+
+    /// Last-modified time, or `None` when unavailable. Used to spot external
+    /// edits and to recognise (and ignore) the watcher event our own save fires.
+    fn modified(&self, path: &Path) -> Option<std::time::SystemTime>;
 }
 
 /// A running recursive filesystem watch. `drain` is non-blocking and returns the

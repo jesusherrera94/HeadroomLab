@@ -43,7 +43,7 @@ pub fn editor_tab(ui: &mut egui::Ui, tab: &EditorTab, active: bool) -> EditorTab
                         .font(theme::body_font())
                         .color(name_color),
                 );
-                if tab.unsaved {
+                if tab.unsaved() {
                     ui.label(
                         RichText::new("●")
                             .font(theme::small_font())

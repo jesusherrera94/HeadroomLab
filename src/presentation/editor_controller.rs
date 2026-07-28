@@ -1,19 +1,31 @@
 //! State and event handling for the Editor window (the IDE shell).
 //!
-//! The explorer tree is now **real**: it reads the opened project from disk on
-//! demand through `ProjectFileSystemPort`, one directory level per folder
-//! expansion. Tabs and the terminal remain static mocks from HL9 (real
-//! editor/terminal logic arrives in later tasks).
+//! The explorer tree reads the opened project from disk on demand through
+//! `ProjectFileSystemPort`, one directory level per folder expansion. Tabs are
+//! now real buffers: opening a file reads and classifies it, typing marks it
+//! dirty, and Cmd/Ctrl+S writes it back. Only the terminal remains a mock.
+//!
+//! Two invariants here exist to protect unsaved work, and both are easy to
+//! break by accident:
+//!
+//! * `prune_missing` must not drop a **dirty** tab whose file vanished — that
+//!   buffer is the last copy of the user's work, and saving recreates the file.
+//! * `retarget_after_rename` must move a tab's path **in place** rather than
+//!   rebuilding it from disk, which would silently discard the buffer.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use crate::application::file_system_service::FileSystemService;
 use crate::application::ports::{
     DirEntryInfo, FileWatchSession, FileWatcherPort, ProjectFileSystemPort,
 };
+use crate::domain::file_system::FileSystemError;
 use crate::domain::project::RecentProject;
+use crate::domain::text_document::{DocumentContent, Language, language_for};
+use crate::presentation::components::molecules::find_bar::FindState;
 
 /// Icon shown for a tree node or tab, resolved from the file name / directory
 /// state. `Generic` is the required fallback for unknown extensions.
@@ -276,27 +288,77 @@ fn refresh_dir(node: &mut TreeNode, fs: &dyn ProjectFileSystemPort) {
     node.loaded = true;
 }
 
-/// One open buffer shown in the tab strip, backed by a real file path.
+/// One open buffer shown in the tab strip, backed by a real file on disk.
 pub struct EditorTab {
     pub name: String,
     pub icon: NodeIcon,
-    pub unsaved: bool,
     pub path: PathBuf,
+    pub language: Language,
+    /// The live buffer, or the reason this file isn't editable.
+    pub content: DocumentContent,
+    /// The text as last read from / written to disk. Dirtiness is this compared
+    /// against the buffer, not an "was edited" flag, so typing a change and
+    /// undoing it correctly clears the ● dot.
+    pub saved_text: String,
+    /// Modification time as of the last read/write. Lets `tick` tell an external
+    /// edit apart from the watcher event our own save just caused.
+    pub disk_modified: Option<SystemTime>,
+    /// Set when the file changed on disk under a dirty buffer, so we kept the
+    /// user's text instead of reloading over it.
+    pub external_change: bool,
+    /// Live find state, present only while the find bar is open.
+    pub find: Option<FindState>,
 }
 
 impl EditorTab {
-    fn from_path(path: &Path) -> Self {
+    /// Opens `path` through the service, classifying the bytes on the way in.
+    fn load(path: &Path, fs_service: &FileSystemService) -> Result<Self, FileSystemError> {
+        let opened = fs_service.open_document(path)?;
+        Ok(Self::from_parts(path, opened.content, opened.modified))
+    }
+
+    fn from_parts(
+        path: &Path,
+        content: DocumentContent,
+        disk_modified: Option<SystemTime>,
+    ) -> Self {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let icon = icon_for_file(&name);
         Self {
+            icon: icon_for_file(&name),
+            language: language_for(&name),
+            saved_text: content.text().unwrap_or_default().to_owned(),
             name,
-            icon,
-            unsaved: false,
             path: path.to_path_buf(),
+            content,
+            disk_modified,
+            external_change: false,
+            find: None,
         }
+    }
+
+    /// Whether the buffer differs from what is on disk. Non-text documents are
+    /// never dirty — they cannot be edited in the first place.
+    pub fn unsaved(&self) -> bool {
+        match self.content.text() {
+            Some(text) => text != self.saved_text,
+            None => false,
+        }
+    }
+
+    /// Moves this tab to a new path (a rename), keeping the buffer — including
+    /// unsaved edits — intact.
+    fn retarget(&mut self, path: &Path) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.icon = icon_for_file(&name);
+        self.language = language_for(&name);
+        self.name = name;
+        self.path = path.to_path_buf();
     }
 }
 
@@ -347,12 +409,28 @@ pub struct PendingConfirm {
     pub title: String,
     pub message: String,
     pub confirm_label: String,
-    pub action: ExplorerAction,
+    /// Optional third button, for the "save instead of discarding" choices.
+    /// `None` keeps the original two-button modal used by delete.
+    pub alternate_label: Option<String>,
+    pub action: EditorAction,
 }
 
-/// A deferred, confirmation-gated explorer action.
-pub enum ExplorerAction {
+/// Which button of the confirmation the user pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmChoice {
+    /// The primary (destructive) action: delete, discard, quit.
+    Primary,
+    /// The alternate action: save first, then proceed.
+    Alternate,
+}
+
+/// A deferred, confirmation-gated action.
+pub enum EditorAction {
     Delete(PathBuf),
+    /// Close a tab whose buffer has unsaved changes.
+    CloseTab(usize),
+    /// Quit with unsaved buffers open.
+    Quit,
 }
 
 /// Transient explorer interaction state (inline editors, modal, error banner).
@@ -376,6 +454,8 @@ pub struct EditorState {
     pub explorer: ExplorerUiState,
     pub tabs: Vec<EditorTab>,
     pub active_tab: usize,
+    /// Last known 1-based cursor position in the code area, for the status bar.
+    pub cursor: Option<(usize, usize)>,
     pub terminal_lines: Vec<String>,
     pub focus_requested: bool,
 }
@@ -414,6 +494,7 @@ impl EditorState {
             explorer: ExplorerUiState::default(),
             tabs: Vec::new(),
             active_tab: 0,
+            cursor: None,
             terminal_lines,
             focus_requested: false,
         }
@@ -443,6 +524,21 @@ pub struct ExplorerEvents {
     pub reveal: Option<PathBuf>,
 }
 
+/// What the user did in the code area this frame.
+#[derive(Default)]
+pub struct CodeEvents {
+    /// The active buffer was typed into.
+    pub edited: bool,
+    /// Live cursor position, for the status bar.
+    pub cursor: Option<(usize, usize)>,
+    pub save: bool,
+    pub save_all: bool,
+    /// Reload the active buffer from disk, discarding edits.
+    pub reload: bool,
+    pub open_find: bool,
+    pub close_find: bool,
+}
+
 /// What the user did in the Editor view this frame.
 #[derive(Default)]
 pub struct EditorViewEvents {
@@ -452,7 +548,9 @@ pub struct EditorViewEvents {
     pub tab_clicked: Option<usize>,
     pub tab_closed: Option<usize>,
     pub explorer: ExplorerEvents,
+    pub code: CodeEvents,
     pub confirm_confirmed: bool,
+    pub confirm_alternate: bool,
     pub confirm_cancelled: bool,
     pub error_dismissed: bool,
 }
@@ -463,6 +561,8 @@ pub struct EditorRequests {
     pub open_emulator: bool,
     pub build_run: bool,
     pub compile: bool,
+    /// A quit was confirmed despite unsaved buffers — let the close through.
+    pub quit_confirmed: bool,
 }
 
 /// Drains the filesystem watcher and refreshes any loaded directory that
@@ -492,7 +592,40 @@ pub fn tick(state: &mut EditorState) {
             refresh_dir(node, fs.as_ref());
         }
     }
+    sync_open_buffers(state, &changed);
     prune_missing(state);
+}
+
+/// Reconciles open buffers with files that changed on disk.
+///
+/// A clean buffer is silently reloaded, so the editor always shows the truth. A
+/// dirty buffer is left exactly as the user typed it and merely flagged — losing
+/// someone's unsaved work to a background `git checkout` or a build would be
+/// indefensible. Our own saves are filtered out by comparing the recorded mtime.
+fn sync_open_buffers(state: &mut EditorState, changed: &[PathBuf]) {
+    let fs_service = state.fs_service.clone();
+
+    for tab in &mut state.tabs {
+        if !changed.iter().any(|p| p == &tab.path) {
+            continue;
+        }
+        // The mtime we stored when we last read or wrote this file. If disk
+        // still matches it, this event is the echo of our own save.
+        if state.fs.modified(&tab.path) == tab.disk_modified {
+            continue;
+        }
+
+        if tab.unsaved() {
+            tab.external_change = true;
+            continue;
+        }
+        if let Ok(opened) = fs_service.open_document(&tab.path) {
+            tab.saved_text = opened.content.text().unwrap_or_default().to_owned();
+            tab.content = opened.content;
+            tab.disk_modified = opened.modified;
+            tab.external_change = false;
+        }
+    }
 }
 
 /// Applies view events to the state and returns the actions the app must take.
@@ -503,13 +636,18 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
         state.active_tab = index;
     }
     if let Some(index) = events.tab_closed {
-        close_tab(state, index);
+        request_close_tab(state, index);
     }
 
     handle_explorer(state, events.explorer);
+    handle_code(state, events.code);
 
+    let mut quit_confirmed = false;
     if events.confirm_confirmed {
-        run_pending_confirm(state);
+        quit_confirmed = run_pending_confirm(state, ConfirmChoice::Primary);
+    }
+    if events.confirm_alternate {
+        quit_confirmed = run_pending_confirm(state, ConfirmChoice::Alternate);
     }
     if events.confirm_cancelled {
         state.explorer.pending_confirm = None;
@@ -522,7 +660,112 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
         open_emulator: events.open_emulator,
         build_run: events.build_run,
         compile: events.compile,
+        quit_confirmed,
     }
+}
+
+fn handle_code(state: &mut EditorState, events: CodeEvents) {
+    if events.save {
+        save_active(state);
+    }
+    if events.save_all {
+        save_all(state);
+    }
+    if events.reload {
+        reload_active(state);
+    }
+    if let Some(tab) = state.tabs.get_mut(state.active_tab) {
+        if events.open_find && tab.content.is_editable() {
+            tab.find = Some(FindState::default());
+        }
+        if events.close_find {
+            tab.find = None;
+        }
+    }
+}
+
+/// Writes the active buffer to disk. On success the saved snapshot and mtime are
+/// updated *together*, which is what makes the next watcher event a no-op.
+fn save_active(state: &mut EditorState) {
+    save_tab(state, state.active_tab);
+}
+
+fn save_all(state: &mut EditorState) {
+    for index in 0..state.tabs.len() {
+        if state.tabs[index].unsaved() {
+            save_tab(state, index);
+        }
+    }
+}
+
+fn save_tab(state: &mut EditorState, index: usize) -> bool {
+    let Some(tab) = state.tabs.get(index) else {
+        return false;
+    };
+    let DocumentContent::Text { text, crlf, .. } = &tab.content else {
+        return false; // Binary / oversized documents are never savable.
+    };
+    let (path, text, crlf) = (tab.path.clone(), text.clone(), *crlf);
+
+    match state.fs_service.save_document(&path, &text, crlf) {
+        Ok(modified) => {
+            let tab = &mut state.tabs[index];
+            tab.saved_text = text;
+            tab.disk_modified = modified;
+            tab.external_change = false;
+            true
+        }
+        Err(e) => {
+            // The buffer stays dirty, so nothing is lost by a failed write.
+            state.explorer.error = Some(e.to_string());
+            false
+        }
+    }
+}
+
+/// Re-reads the active tab from disk, discarding the buffer.
+fn reload_active(state: &mut EditorState) {
+    let Some(tab) = state.tabs.get(state.active_tab) else {
+        return;
+    };
+    let path = tab.path.clone();
+    match state.fs_service.open_document(&path) {
+        Ok(opened) => {
+            let tab = &mut state.tabs[state.active_tab];
+            tab.saved_text = opened.content.text().unwrap_or_default().to_owned();
+            tab.content = opened.content;
+            tab.disk_modified = opened.modified;
+            tab.external_change = false;
+        }
+        Err(e) => state.explorer.error = Some(e.to_string()),
+    }
+}
+
+/// True when any open buffer has unsaved changes — the quit guard's condition.
+pub fn has_unsaved_work(state: &EditorState) -> bool {
+    state.tabs.iter().any(EditorTab::unsaved)
+}
+
+/// Raises the quit confirmation. Returns false when there is nothing to guard,
+/// in which case the caller should just let the window close.
+pub fn request_quit(state: &mut EditorState) -> bool {
+    if !has_unsaved_work(state) {
+        return false;
+    }
+    let count = state.tabs.iter().filter(|t| t.unsaved()).count();
+    let message = if count == 1 {
+        "1 file has unsaved changes. Save before quitting?".to_owned()
+    } else {
+        format!("{count} files have unsaved changes. Save before quitting?")
+    };
+    state.explorer.pending_confirm = Some(PendingConfirm {
+        title: "Unsaved changes".to_string(),
+        message,
+        confirm_label: "Discard & quit".to_string(),
+        alternate_label: Some("Save all & quit".to_string()),
+        action: EditorAction::Quit,
+    });
+    true
 }
 
 fn handle_explorer(state: &mut EditorState, events: ExplorerEvents) {
@@ -651,24 +894,49 @@ fn request_delete(state: &mut EditorState, path: &Path) {
         title: title.to_string(),
         message,
         confirm_label: "Delete".to_string(),
-        action: ExplorerAction::Delete(path.to_path_buf()),
+        alternate_label: None,
+        action: EditorAction::Delete(path.to_path_buf()),
     });
 }
 
-fn run_pending_confirm(state: &mut EditorState) {
+/// Runs the pending confirmation. Returns true when a quit was approved, so the
+/// caller can let the window close.
+fn run_pending_confirm(state: &mut EditorState, choice: ConfirmChoice) -> bool {
     let Some(confirm) = state.explorer.pending_confirm.take() else {
-        return;
+        return false;
     };
     match confirm.action {
-        ExplorerAction::Delete(path) => match state.fs_service.delete(&path) {
-            Ok(()) => {
-                if let Some(parent) = path.parent() {
-                    refresh_parent(state, parent);
+        EditorAction::Delete(path) => {
+            match state.fs_service.delete(&path) {
+                Ok(()) => {
+                    if let Some(parent) = path.parent() {
+                        refresh_parent(state, parent);
+                    }
+                    prune_missing(state);
                 }
-                prune_missing(state);
+                Err(e) => state.explorer.error = Some(e.to_string()),
             }
-            Err(e) => state.explorer.error = Some(e.to_string()),
-        },
+            false
+        }
+        EditorAction::CloseTab(index) => {
+            // "Save" must not close a tab whose write failed — the error banner
+            // is shown and the buffer stays open and dirty.
+            if choice == ConfirmChoice::Alternate && !save_tab(state, index) {
+                return false;
+            }
+            close_tab(state, index);
+            false
+        }
+        EditorAction::Quit => {
+            if choice == ConfirmChoice::Alternate {
+                save_all(state);
+                // Any write that failed left its buffer dirty; don't quit over it.
+                if has_unsaved_work(state) {
+                    return false;
+                }
+            }
+            true
+        }
     }
 }
 
@@ -682,14 +950,38 @@ fn refresh_parent(state: &mut EditorState, dir: &Path) {
     }
 }
 
-/// Opens (or re-activates) a tab for `path`.
+/// Opens (or re-activates) a tab for `path`, reading its content from disk.
+/// A read failure surfaces in the error banner and opens no tab.
 fn open_tab(state: &mut EditorState, path: &Path) {
     if let Some(index) = state.tabs.iter().position(|t| t.path == path) {
         state.active_tab = index;
-    } else {
-        state.tabs.push(EditorTab::from_path(path));
-        state.active_tab = state.tabs.len() - 1;
+        return;
     }
+    match EditorTab::load(path, &state.fs_service) {
+        Ok(tab) => {
+            state.tabs.push(tab);
+            state.active_tab = state.tabs.len() - 1;
+        }
+        Err(e) => state.explorer.error = Some(e.to_string()),
+    }
+}
+
+/// Closing a tab is confirmation-gated when its buffer is dirty.
+fn request_close_tab(state: &mut EditorState, index: usize) {
+    let Some(tab) = state.tabs.get(index) else {
+        return;
+    };
+    if !tab.unsaved() {
+        close_tab(state, index);
+        return;
+    }
+    state.explorer.pending_confirm = Some(PendingConfirm {
+        title: "Unsaved changes".to_string(),
+        message: format!("\"{}\" has unsaved changes.", tab.name),
+        confirm_label: "Discard".to_string(),
+        alternate_label: Some("Save".to_string()),
+        action: EditorAction::CloseTab(index),
+    });
 }
 
 fn close_tab(state: &mut EditorState, index: usize) {
@@ -715,23 +1007,31 @@ fn retarget_after_rename(state: &mut EditorState, old: &Path, new: &Path) {
             state.tree.selected = Some(new.join(rest));
         }
     }
+    // Retarget in place rather than rebuilding the tab: a rebuild would re-read
+    // the file and silently throw away whatever the user had typed.
     for tab in &mut state.tabs {
         if tab.path == old {
-            *tab = EditorTab::from_path(new);
+            tab.retarget(new);
         } else if let Ok(rest) = tab.path.strip_prefix(old) {
-            *tab = EditorTab::from_path(&new.join(rest));
+            let moved = new.join(rest);
+            tab.retarget(&moved);
         }
     }
 }
 
 /// Drops selection and tabs whose backing file no longer exists.
+///
+/// A **dirty** tab survives deletion: its buffer is the only remaining copy of
+/// the user's work, and saving it recreates the file.
 fn prune_missing(state: &mut EditorState) {
     if let Some(sel) = state.tree.selected.clone()
         && !state.fs.exists(&sel)
     {
         state.tree.selected = None;
     }
-    state.tabs.retain(|t| state.fs.exists(&t.path));
+    state
+        .tabs
+        .retain(|t| t.unsaved() || state.fs.exists(&t.path));
     if state.active_tab >= state.tabs.len() {
         state.active_tab = state.tabs.len().saturating_sub(1);
     }
@@ -803,9 +1103,24 @@ mod tests {
         assert_eq!(icon_for_file("README"), NodeIcon::Generic);
     }
 
-    /// Fake filesystem returning a fixed listing per directory, for `refresh_dir`.
+    /// Fake filesystem returning a fixed listing per directory, plus an in-memory
+    /// file store so buffer loading and saving can be exercised without disk.
+    #[derive(Default)]
     struct FakeFs {
         listing: std::collections::HashMap<PathBuf, Vec<(String, bool)>>,
+        files: std::cell::RefCell<std::collections::HashMap<PathBuf, Vec<u8>>>,
+        /// Bumped on every write so `modified` returns a fresh instant, the way a
+        /// real filesystem would.
+        clock: std::cell::Cell<u64>,
+        stamps: std::cell::RefCell<std::collections::HashMap<PathBuf, std::time::SystemTime>>,
+    }
+
+    impl FakeFs {
+        fn with_file(path: &Path, contents: &[u8]) -> Self {
+            let fs = FakeFs::default();
+            fs.write_file(path, contents).unwrap();
+            fs
+        }
     }
 
     impl ProjectFileSystemPort for FakeFs {
@@ -821,8 +1136,9 @@ mod tests {
                 })
                 .collect()
         }
-        fn exists(&self, _: &Path) -> bool {
-            true
+        fn exists(&self, path: &Path) -> bool {
+            // Directories only ever come from `listing`; files from the store.
+            self.listing.contains_key(path) || self.files.borrow().contains_key(path)
         }
         fn create_file(
             &self,
@@ -854,6 +1170,282 @@ mod tests {
         fn reveal(&self, _: &Path) -> Result<(), crate::domain::file_system::FileSystemError> {
             unreachable!()
         }
+
+        fn read_file(
+            &self,
+            path: &Path,
+        ) -> Result<Vec<u8>, crate::domain::file_system::FileSystemError> {
+            self.files.borrow().get(path).cloned().ok_or_else(|| {
+                crate::domain::file_system::FileSystemError::NotFound(path.display().to_string())
+            })
+        }
+
+        fn write_file(
+            &self,
+            path: &Path,
+            contents: &[u8],
+        ) -> Result<(), crate::domain::file_system::FileSystemError> {
+            self.files
+                .borrow_mut()
+                .insert(path.to_path_buf(), contents.to_vec());
+            let tick = self.clock.get() + 1;
+            self.clock.set(tick);
+            self.stamps.borrow_mut().insert(
+                path.to_path_buf(),
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(tick),
+            );
+            Ok(())
+        }
+
+        fn modified(&self, path: &Path) -> Option<std::time::SystemTime> {
+            self.stamps.borrow().get(path).copied()
+        }
+    }
+
+    #[test]
+    fn open_document_classifies_and_save_round_trips_crlf() {
+        use crate::domain::text_document::DocumentContent;
+
+        let path = PathBuf::from("/proj/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"int a;\r\nint b;\r\n"));
+        let service = FileSystemService::new(fs.clone());
+
+        let opened = service.open_document(&path).expect("readable");
+        let DocumentContent::Text { text, crlf, .. } = opened.content else {
+            panic!("expected editable text");
+        };
+        // CRLF is normalised for editing…
+        assert_eq!(text, "int a;\nint b;\n");
+        assert!(crlf);
+
+        // …and restored byte-for-byte on the way back out.
+        let stamp = service.save_document(&path, &text, crlf).expect("writable");
+        assert_eq!(
+            fs.read_file(&path).unwrap(),
+            b"int a;\r\nint b;\r\n".to_vec()
+        );
+        // The post-write mtime is handed back so the caller can ignore its own
+        // watcher event.
+        assert!(stamp.is_some());
+        assert_ne!(stamp, opened.modified);
+    }
+
+    #[test]
+    fn open_document_reports_binary_and_missing_files() {
+        use crate::domain::text_document::DocumentContent;
+
+        let path = PathBuf::from("/proj/build/libx.dylib");
+        let fs = Rc::new(FakeFs::with_file(&path, &[0x00, 0xFF, 0xFE]));
+        let service = FileSystemService::new(fs);
+
+        assert_eq!(
+            service.open_document(&path).unwrap().content,
+            DocumentContent::Binary
+        );
+        assert!(matches!(
+            service.open_document(Path::new("/proj/gone.cpp")),
+            Err(crate::domain::file_system::FileSystemError::NotFound(_))
+        ));
+    }
+
+    /// Builds an editor state over `fs` with no watcher, rooted at `/proj`.
+    fn state_over(fs: Rc<FakeFs>) -> EditorState {
+        let fs_service = Rc::new(FileSystemService::new(fs.clone()));
+        let root = PathBuf::from("/proj");
+        EditorState {
+            project_name: "proj".into(),
+            project_path: root.clone(),
+            fs: fs.clone(),
+            fs_service,
+            watch: None,
+            tree: FileTreeState {
+                root: TreeNode {
+                    name: "proj".into(),
+                    path: root,
+                    is_dir: true,
+                    icon: NodeIcon::FolderClosed,
+                    loaded: true,
+                    children: Vec::new(),
+                },
+                selected: None,
+            },
+            explorer: ExplorerUiState::default(),
+            tabs: Vec::new(),
+            active_tab: 0,
+            cursor: None,
+            terminal_lines: Vec::new(),
+            focus_requested: false,
+        }
+    }
+
+    /// Types `text` into the active buffer, the way the code editor would.
+    fn edit_active(state: &mut EditorState, text: &str) {
+        if let DocumentContent::Text { text: buffer, .. } =
+            &mut state.tabs[state.active_tab].content
+        {
+            *buffer = text.to_string();
+        }
+    }
+
+    #[test]
+    fn dirty_tabs_survive_deletion_so_the_buffer_can_be_saved_back() {
+        let path = PathBuf::from("/proj/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"int a;\n"));
+        let mut state = state_over(fs.clone());
+
+        open_tab(&mut state, &path);
+        assert_eq!(state.tabs.len(), 1);
+
+        // Deleted on disk while still clean → the tab goes away.
+        fs.files.borrow_mut().remove(&path);
+        prune_missing(&mut state);
+        assert!(state.tabs.is_empty());
+
+        // Re-open, type into it, then delete the file again.
+        fs.write_file(&path, b"int a;\n").unwrap();
+        open_tab(&mut state, &path);
+        edit_active(&mut state, "int a; // edited\n");
+        assert!(state.tabs[0].unsaved());
+
+        fs.files.borrow_mut().remove(&path);
+        prune_missing(&mut state);
+        assert_eq!(state.tabs.len(), 1, "a dirty buffer must not be discarded");
+
+        // And saving it recreates the file.
+        assert!(save_tab(&mut state, 0));
+        assert_eq!(fs.read_file(&path).unwrap(), b"int a; // edited\n".to_vec());
+        assert!(!state.tabs[0].unsaved());
+    }
+
+    #[test]
+    fn renaming_a_parent_folder_keeps_the_unsaved_buffer() {
+        let path = PathBuf::from("/proj/src/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"original\n"));
+        let mut state = state_over(fs);
+
+        open_tab(&mut state, &path);
+        edit_active(&mut state, "typed but not saved\n");
+
+        retarget_after_rename(
+            &mut state,
+            Path::new("/proj/src"),
+            Path::new("/proj/source"),
+        );
+
+        let tab = &state.tabs[0];
+        assert_eq!(tab.path, PathBuf::from("/proj/source/main.cpp"));
+        assert_eq!(tab.name, "main.cpp");
+        assert_eq!(
+            tab.content.text(),
+            Some("typed but not saved\n"),
+            "the rename must not re-read the file over the user's edits"
+        );
+        assert!(tab.unsaved());
+    }
+
+    #[test]
+    fn external_changes_reload_clean_buffers_and_flag_dirty_ones() {
+        let clean = PathBuf::from("/proj/clean.cpp");
+        let dirty = PathBuf::from("/proj/dirty.cpp");
+        let fs = Rc::new(FakeFs::default());
+        fs.write_file(&clean, b"one\n").unwrap();
+        fs.write_file(&dirty, b"one\n").unwrap();
+        let mut state = state_over(fs.clone());
+
+        open_tab(&mut state, &clean);
+        open_tab(&mut state, &dirty);
+        state.active_tab = 1;
+        edit_active(&mut state, "my unsaved work\n");
+
+        // Something outside the app rewrites both files.
+        fs.write_file(&clean, b"two\n").unwrap();
+        fs.write_file(&dirty, b"two\n").unwrap();
+        sync_open_buffers(&mut state, &[clean.clone(), dirty.clone()]);
+
+        assert_eq!(state.tabs[0].content.text(), Some("two\n"));
+        assert!(!state.tabs[0].external_change);
+
+        assert_eq!(
+            state.tabs[1].content.text(),
+            Some("my unsaved work\n"),
+            "a dirty buffer must never be overwritten by the watcher"
+        );
+        assert!(state.tabs[1].external_change);
+    }
+
+    #[test]
+    fn our_own_save_is_not_mistaken_for_an_external_change() {
+        let path = PathBuf::from("/proj/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"one\n"));
+        let mut state = state_over(fs);
+
+        open_tab(&mut state, &path);
+        edit_active(&mut state, "two\n");
+        assert!(save_tab(&mut state, 0));
+
+        // The watcher now reports the write we just made.
+        sync_open_buffers(&mut state, &[path]);
+        assert!(!state.tabs[0].external_change);
+        assert!(!state.tabs[0].unsaved());
+    }
+
+    #[test]
+    fn binary_files_open_read_only_and_are_never_saved() {
+        let path = PathBuf::from("/proj/build/libx.dylib");
+        let fs = Rc::new(FakeFs::with_file(&path, &[0x00, 0xFF]));
+        let mut state = state_over(fs.clone());
+
+        open_tab(&mut state, &path);
+        assert_eq!(state.tabs[0].content, DocumentContent::Binary);
+        assert!(!state.tabs[0].unsaved());
+
+        // Saving is a no-op, so the file on disk is left untouched.
+        assert!(!save_tab(&mut state, 0));
+        assert_eq!(fs.read_file(&path).unwrap(), vec![0x00, 0xFF]);
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_asks_before_discarding() {
+        let path = PathBuf::from("/proj/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"one\n"));
+        let mut state = state_over(fs.clone());
+
+        open_tab(&mut state, &path);
+        request_close_tab(&mut state, 0);
+        assert!(state.tabs.is_empty(), "a clean tab closes immediately");
+
+        open_tab(&mut state, &path);
+        edit_active(&mut state, "two\n");
+        request_close_tab(&mut state, 0);
+        assert_eq!(state.tabs.len(), 1, "a dirty tab waits for confirmation");
+        assert!(state.explorer.pending_confirm.is_some());
+
+        // "Save" writes the buffer and then closes.
+        run_pending_confirm(&mut state, ConfirmChoice::Alternate);
+        assert!(state.tabs.is_empty());
+        assert_eq!(fs.read_file(&path).unwrap(), b"two\n".to_vec());
+    }
+
+    #[test]
+    fn quitting_is_guarded_only_while_work_is_unsaved() {
+        let path = PathBuf::from("/proj/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"one\n"));
+        let mut state = state_over(fs.clone());
+
+        open_tab(&mut state, &path);
+        assert!(
+            !request_quit(&mut state),
+            "nothing dirty → quit straight away"
+        );
+
+        edit_active(&mut state, "two\n");
+        assert!(request_quit(&mut state));
+        assert!(state.explorer.pending_confirm.is_some());
+
+        // "Save all & quit" persists first, then approves the quit.
+        assert!(run_pending_confirm(&mut state, ConfirmChoice::Alternate));
+        assert_eq!(fs.read_file(&path).unwrap(), b"two\n".to_vec());
+        assert!(!has_unsaved_work(&state));
     }
 
     #[test]
@@ -865,7 +1457,10 @@ mod tests {
             root.clone(),
             vec![("src".into(), true), ("b.txt".into(), false)],
         );
-        let fs = FakeFs { listing };
+        let fs = FakeFs {
+            listing,
+            ..Default::default()
+        };
 
         // Existing tree: root → [src (loaded, with a child)].
         let mut src = TreeNode {

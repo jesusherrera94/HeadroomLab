@@ -196,6 +196,15 @@ impl HeadroomApp {
                 let events = editor_window::show(ui, state);
                 requests = editor_controller::handle_events(state, events);
                 close_requested = ui.ctx().input(|i| i.viewport().close_requested());
+
+                // Closing the Editor quits the whole app, so unsaved buffers get
+                // one chance to be rescued: cancel the OS close and raise the
+                // confirmation instead. The user's answer arrives next frame as
+                // `quit_confirmed`.
+                if close_requested && editor_controller::request_quit(state) {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::CancelClose);
+                    close_requested = false;
+                }
             },
         );
 
@@ -204,7 +213,7 @@ impl HeadroomApp {
         if requests.open_emulator {
             self.launch_simulator();
         }
-        if close_requested {
+        if close_requested || requests.quit_confirmed {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
     }
