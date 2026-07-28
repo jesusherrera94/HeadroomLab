@@ -8,9 +8,18 @@
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use crate::application::ports::ProjectFileSystemPort;
 use crate::domain::file_system::{FileSystemError, validate_entry_name};
+use crate::domain::text_document::{DocumentContent, classify, to_disk_bytes};
+
+/// A file read for editing: its classified content plus the modification time it
+/// was read at, so the caller can tell a later external change from its own save.
+pub struct OpenedDocument {
+    pub content: DocumentContent,
+    pub modified: Option<SystemTime>,
+}
 
 pub struct FileSystemService {
     fs: Rc<dyn ProjectFileSystemPort>,
@@ -56,6 +65,32 @@ impl FileSystemService {
     /// Reveals `path` in the platform file manager.
     pub fn reveal(&self, path: &Path) -> Result<(), FileSystemError> {
         self.fs.reveal(path)
+    }
+
+    /// Reads a file for the editor and applies the open-time policy (size cap,
+    /// UTF-8 validity, highlight threshold). The mtime is captured *before* the
+    /// read so a change racing the read is detected on the next tick rather than
+    /// being silently baked in as current.
+    pub fn open_document(&self, path: &Path) -> Result<OpenedDocument, FileSystemError> {
+        let modified = self.fs.modified(path);
+        let bytes = self.fs.read_file(path)?;
+        Ok(OpenedDocument {
+            content: classify(bytes),
+            modified,
+        })
+    }
+
+    /// Writes `text` back to `path`, restoring CRLF line endings if the file had
+    /// them. Returns the post-write mtime so the caller can store it and ignore
+    /// the watcher event this write is about to produce.
+    pub fn save_document(
+        &self,
+        path: &Path,
+        text: &str,
+        crlf: bool,
+    ) -> Result<Option<SystemTime>, FileSystemError> {
+        self.fs.write_file(path, &to_disk_bytes(text, crlf))?;
+        Ok(self.fs.modified(path))
     }
 
     /// Shared create precondition: valid name and no existing entry.

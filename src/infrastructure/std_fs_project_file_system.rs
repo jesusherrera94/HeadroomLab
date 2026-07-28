@@ -85,4 +85,27 @@ impl ProjectFileSystemPort for StdFsProjectFileSystem {
     fn reveal(&self, path: &Path) -> Result<(), FileSystemError> {
         opener::reveal(path).map_err(|e| FileSystemError::Io(e.to_string()))
     }
+
+    fn read_file(&self, path: &Path) -> Result<Vec<u8>, FileSystemError> {
+        std::fs::read(path).map_err(|e| io_error(path, e))
+    }
+
+    fn write_file(&self, path: &Path, contents: &[u8]) -> Result<(), FileSystemError> {
+        // No existence check: writing recreates a file deleted from under a
+        // dirty buffer, which is exactly the recovery path we want.
+        std::fs::write(path, contents).map_err(|e| io_error(path, e))
+    }
+
+    fn modified(&self, path: &Path) -> Option<std::time::SystemTime> {
+        std::fs::metadata(path).ok()?.modified().ok()
+    }
+}
+
+/// Maps an IO failure onto the domain error, keeping "gone" distinct from the
+/// rest so the UI can say something specific.
+fn io_error(path: &Path, e: std::io::Error) -> FileSystemError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => FileSystemError::NotFound(path.display().to_string()),
+        _ => FileSystemError::Io(e.to_string()),
+    }
 }
