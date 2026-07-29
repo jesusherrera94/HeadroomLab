@@ -3,10 +3,16 @@
 //! mocked (they belong to later stories).
 
 use eframe::egui::{self, RichText};
+use egui_phosphor::regular as ph;
 
 use crate::domain::text_document::{DocumentContent, language_label};
-use crate::presentation::editor_controller::EditorTab;
+use crate::presentation::editor_controller::{EditorTab, save_shortcut_label};
 use crate::presentation::theme;
+
+/// Radius of the unsaved ●, matching the explorer row's.
+const DOT_RADIUS: f32 = 3.5;
+/// Width of the slot the dot is painted in.
+const DOT_SLOT: f32 = 12.0;
 
 /// The live editor facts the status bar reports.
 pub struct StatusInfo<'a> {
@@ -16,15 +22,27 @@ pub struct StatusInfo<'a> {
     pub cursor: Option<(usize, usize)>,
 }
 
-pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) {
+/// What the user did in the status bar this frame.
+#[derive(Default)]
+pub struct StatusBarEvents {
+    /// The unsaved segment was clicked — save the active buffer.
+    pub save: bool,
+}
+
+pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
+    let mut events = StatusBarEvents::default();
+
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        segment(ui, &format!("⑂ main — {}", info.project_name));
+        segment(
+            ui,
+            &format!("{} main — {}", ph::GIT_BRANCH, info.project_name),
+        );
 
         if let Some(tab) = info.tab
             && tab.unsaved()
         {
-            segment(ui, &format!("● {} — unsaved", tab.name));
+            events.save = unsaved_segment(ui, tab);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -51,6 +69,45 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) {
             }
         });
     });
+
+    events
+}
+
+/// The clickable "this buffer is unsaved" segment. Returns whether it was
+/// pressed.
+///
+/// The dot is **painted**, not written as a `●` character: U+25CF is absent from
+/// both the bundled text fonts and Phosphor (whose glyphs all live in the private
+/// use area), so a literal one renders as a tofu box. The tab strip and the
+/// explorer row paint theirs for the same reason — keep all three painted.
+///
+/// The segment names the file rather than just saying "unsaved changes": with
+/// several dirty buffers open, the latter says nothing about which one Cmd+S is
+/// about to write.
+fn unsaved_segment(ui: &mut egui::Ui, tab: &EditorTab) -> bool {
+    let inner = ui.horizontal(|ui| {
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(DOT_SLOT, DOT_RADIUS * 2.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(rect.center(), DOT_RADIUS, theme::UNSAVED_DOT);
+        ui.label(
+            RichText::new(format!("{} — {} to save", tab.name, save_shortcut_label()))
+                .font(theme::small_font())
+                .color(theme::UNSAVED_DOT),
+        );
+    });
+    ui.add_space(10.0);
+
+    // Own id rather than the layout's, so clicking the segment can't collide
+    // with the horizontal's own interaction slot.
+    let id = ui.make_persistent_id("status_bar_unsaved");
+    let response = ui
+        .interact(inner.response.rect, id, egui::Sense::click())
+        .on_hover_text("Save this file");
+    if response.hovered() {
+        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
 }
 
 fn segment(ui: &mut egui::Ui, text: &str) {

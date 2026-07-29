@@ -5,15 +5,20 @@
 //! now real buffers: opening a file reads and classifies it, typing marks it
 //! dirty, and Cmd/Ctrl+S writes it back. Only the terminal remains a mock.
 //!
-//! Two invariants here exist to protect unsaved work, and both are easy to
+//! Three invariants here exist to protect unsaved work, and all are easy to
 //! break by accident:
 //!
 //! * `prune_missing` must not drop a **dirty** tab whose file vanished — that
 //!   buffer is the last copy of the user's work, and saving recreates the file.
 //! * `retarget_after_rename` must move a tab's path **in place** rather than
 //!   rebuilding it from disk, which would silently discard the buffer.
+//! * Anything that outlives the frame it was raised in — the close/quit
+//!   confirmation especially — must refer to a tab by [`TabId`], never by its
+//!   position. Tabs can be reordered by dragging and pruned by the watcher, so a
+//!   stored index silently retargets and would discard the wrong buffer.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -288,8 +293,17 @@ fn refresh_dir(node: &mut TreeNode, fs: &dyn ProjectFileSystemPort) {
     node.loaded = true;
 }
 
+/// A tab's identity, stable for as long as the tab is open.
+///
+/// Positions are not identities here: the strip can be reordered by dragging and
+/// pruned by the file watcher, so anything that refers to a tab across frames
+/// must hold one of these. Handed out by `EditorState::next_tab_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabId(u64);
+
 /// One open buffer shown in the tab strip, backed by a real file on disk.
 pub struct EditorTab {
+    pub id: TabId,
     pub name: String,
     pub icon: NodeIcon,
     pub path: PathBuf,
@@ -312,12 +326,17 @@ pub struct EditorTab {
 
 impl EditorTab {
     /// Opens `path` through the service, classifying the bytes on the way in.
-    fn load(path: &Path, fs_service: &FileSystemService) -> Result<Self, FileSystemError> {
+    fn load(
+        id: TabId,
+        path: &Path,
+        fs_service: &FileSystemService,
+    ) -> Result<Self, FileSystemError> {
         let opened = fs_service.open_document(path)?;
-        Ok(Self::from_parts(path, opened.content, opened.modified))
+        Ok(Self::from_parts(id, path, opened.content, opened.modified))
     }
 
     fn from_parts(
+        id: TabId,
         path: &Path,
         content: DocumentContent,
         disk_modified: Option<SystemTime>,
@@ -327,6 +346,7 @@ impl EditorTab {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         Self {
+            id,
             icon: icon_for_file(&name),
             language: language_for(&name),
             saved_text: content.text().unwrap_or_default().to_owned(),
@@ -387,6 +407,28 @@ pub fn row_icon(node: &TreeNode, open: Option<bool>) -> NodeIcon {
     }
 }
 
+/// The platform's name for "show this in the OS file manager". Shared by the
+/// explorer's context menu and the tab strip's, so the two can't drift apart.
+pub fn reveal_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Reveal in Finder"
+    } else if cfg!(target_os = "windows") {
+        "Show in Explorer"
+    } else {
+        "Show in Files"
+    }
+}
+
+/// How the save shortcut is written for this platform, for tooltips and the
+/// status bar's "… to save" hint.
+pub fn save_shortcut_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘S"
+    } else {
+        "Ctrl+S"
+    }
+}
+
 /// An inline "new file/folder" row being typed into `parent`.
 pub struct PendingCreate {
     pub parent: PathBuf,
@@ -425,10 +467,14 @@ pub enum ConfirmChoice {
 }
 
 /// A deferred, confirmation-gated action.
+///
+/// The tab is named by [`TabId`] rather than by position precisely because this
+/// outlives the frame that raised it: the watcher can prune a tab, and the user
+/// can drag the strip into a new order, while the modal is up.
 pub enum EditorAction {
     Delete(PathBuf),
     /// Close a tab whose buffer has unsaved changes.
-    CloseTab(usize),
+    CloseTab(TabId),
     /// Quit with unsaved buffers open.
     Quit,
 }
@@ -454,6 +500,13 @@ pub struct EditorState {
     pub explorer: ExplorerUiState,
     pub tabs: Vec<EditorTab>,
     pub active_tab: usize,
+    /// Source of [`TabId`]s, bumped once per tab opened. Never reused, so a stale
+    /// id can only ever fail to resolve — it can never resolve to a *different*
+    /// buffer than the one it was taken for.
+    next_tab_id: u64,
+    /// Set when the active tab changed from outside the strip (opening a file, a
+    /// reorder), so the next paint scrolls it back into view.
+    pub scroll_active_into_view: bool,
     /// Last known 1-based cursor position in the code area, for the status bar.
     pub cursor: Option<(usize, usize)>,
     pub terminal_lines: Vec<String>,
@@ -494,11 +547,36 @@ impl EditorState {
             explorer: ExplorerUiState::default(),
             tabs: Vec::new(),
             active_tab: 0,
+            next_tab_id: 0,
+            scroll_active_into_view: false,
             cursor: None,
             terminal_lines,
             focus_requested: false,
         }
     }
+
+    /// Takes the next unused tab identity.
+    fn take_tab_id(&mut self) -> TabId {
+        self.next_tab_id += 1;
+        TabId(self.next_tab_id)
+    }
+
+    /// The current position of the tab with `id`, or `None` if it has since been
+    /// closed or pruned.
+    fn index_of(&self, id: TabId) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+}
+
+/// The paths of every open buffer with unsaved changes — what the Explorer needs
+/// to mark its rows, without knowing anything about tabs.
+pub fn unsaved_paths(state: &EditorState) -> HashSet<PathBuf> {
+    state
+        .tabs
+        .iter()
+        .filter(|t| t.unsaved())
+        .map(|t| t.path.clone())
+        .collect()
 }
 
 /// What the user did in the explorer this frame.
@@ -540,13 +618,24 @@ pub struct CodeEvents {
 }
 
 /// What the user did in the Editor view this frame.
+///
+/// `tab_clicked` is positional because it is applied in the same frame it was
+/// produced; everything that can survive into a later frame carries a [`TabId`].
 #[derive(Default)]
 pub struct EditorViewEvents {
     pub open_emulator: bool,
     pub build_run: bool,
     pub compile: bool,
     pub tab_clicked: Option<usize>,
-    pub tab_closed: Option<usize>,
+    pub tab_closed: Option<TabId>,
+    /// Save one specific tab — the ● in the tab strip, or its context menu.
+    pub tab_saved: Option<TabId>,
+    /// A tab was dropped: which tab was dragged, and the slot it landed on in
+    /// the index space the strip was painted in. Identity resolution stays in
+    /// this module — the view never converts a `TabId` to a position.
+    pub tab_reordered: Option<(TabId, usize)>,
+    /// Reveal a tab's file in the OS file manager.
+    pub tab_reveal: Option<PathBuf>,
     pub explorer: ExplorerEvents,
     pub code: CodeEvents,
     pub confirm_confirmed: bool,
@@ -635,8 +724,26 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
     {
         state.active_tab = index;
     }
-    if let Some(index) = events.tab_closed {
-        request_close_tab(state, index);
+    if let Some((id, insert_before)) = events.tab_reordered
+        && let Some(from) = state.index_of(id)
+    {
+        move_tab(state, from, insert_before);
+    }
+    if let Some(id) = events.tab_saved
+        && let Some(index) = state.index_of(id)
+    {
+        // Deliberately not `state.active_tab = index`: the ● is an action button,
+        // and yanking the code pane to another file as a side effect of "save
+        // this" is the kind of surprise this story exists to remove.
+        save_tab(state, index);
+    }
+    if let Some(id) = events.tab_closed {
+        request_close_tab(state, id);
+    }
+    if let Some(path) = events.tab_reveal
+        && let Err(e) = state.fs_service.reveal(&path)
+    {
+        state.explorer.error = Some(e.to_string());
     }
 
     handle_explorer(state, events.explorer);
@@ -918,7 +1025,13 @@ fn run_pending_confirm(state: &mut EditorState, choice: ConfirmChoice) -> bool {
             }
             false
         }
-        EditorAction::CloseTab(index) => {
+        EditorAction::CloseTab(id) => {
+            // Resolved now, not when the confirmation was raised: the strip may
+            // have been reordered or pruned while the modal was up. A tab that
+            // has since gone away needs no closing.
+            let Some(index) = state.index_of(id) else {
+                return false;
+            };
             // "Save" must not close a tab whose write failed — the error banner
             // is shown and the buffer stays open and dirty.
             if choice == ConfirmChoice::Alternate && !save_tab(state, index) {
@@ -953,11 +1066,13 @@ fn refresh_parent(state: &mut EditorState, dir: &Path) {
 /// Opens (or re-activates) a tab for `path`, reading its content from disk.
 /// A read failure surfaces in the error banner and opens no tab.
 fn open_tab(state: &mut EditorState, path: &Path) {
+    state.scroll_active_into_view = true;
     if let Some(index) = state.tabs.iter().position(|t| t.path == path) {
         state.active_tab = index;
         return;
     }
-    match EditorTab::load(path, &state.fs_service) {
+    let id = state.take_tab_id();
+    match EditorTab::load(id, path, &state.fs_service) {
         Ok(tab) => {
             state.tabs.push(tab);
             state.active_tab = state.tabs.len() - 1;
@@ -967,10 +1082,11 @@ fn open_tab(state: &mut EditorState, path: &Path) {
 }
 
 /// Closing a tab is confirmation-gated when its buffer is dirty.
-fn request_close_tab(state: &mut EditorState, index: usize) {
-    let Some(tab) = state.tabs.get(index) else {
+fn request_close_tab(state: &mut EditorState, id: TabId) {
+    let Some(index) = state.index_of(id) else {
         return;
     };
+    let tab = &state.tabs[index];
     if !tab.unsaved() {
         close_tab(state, index);
         return;
@@ -980,8 +1096,40 @@ fn request_close_tab(state: &mut EditorState, index: usize) {
         message: format!("\"{}\" has unsaved changes.", tab.name),
         confirm_label: "Discard".to_string(),
         alternate_label: Some("Save".to_string()),
-        action: EditorAction::CloseTab(index),
+        action: EditorAction::CloseTab(id),
     });
+}
+
+/// Moves the tab at `from` so that it lands immediately before what is currently
+/// at `insert_before` — the index space the strip was painted in, so
+/// `insert_before == state.tabs.len()` means "drop at the end".
+///
+/// The previously active buffer stays active: `active_tab` is re-derived from its
+/// [`TabId`] rather than assumed to still be the same slot.
+pub fn move_tab(state: &mut EditorState, from: usize, insert_before: usize) {
+    let len = state.tabs.len();
+    if from >= len || insert_before > len {
+        return;
+    }
+    // Removing `from` shifts everything after it down by one, so a landing slot
+    // past the dragged tab has to come back by one to mean the same gap.
+    let to = if insert_before > from {
+        insert_before - 1
+    } else {
+        insert_before
+    };
+    if to == from {
+        return;
+    }
+
+    let active_id = state.tabs.get(state.active_tab).map(|t| t.id);
+    let tab = state.tabs.remove(from);
+    state.tabs.insert(to, tab);
+
+    if let Some(index) = active_id.and_then(|id| state.index_of(id)) {
+        state.active_tab = index;
+    }
+    state.scroll_active_into_view = true;
 }
 
 fn close_tab(state: &mut EditorState, index: usize) {
@@ -1272,10 +1420,18 @@ mod tests {
             explorer: ExplorerUiState::default(),
             tabs: Vec::new(),
             active_tab: 0,
+            next_tab_id: 0,
+            scroll_active_into_view: false,
             cursor: None,
             terminal_lines: Vec::new(),
             focus_requested: false,
         }
+    }
+
+    /// The identity of the tab currently at `index`. Tests name tabs by identity
+    /// for the same reason the production code does.
+    fn tab_id(state: &EditorState, index: usize) -> TabId {
+        state.tabs[index].id
     }
 
     /// Types `text` into the active buffer, the way the code editor would.
@@ -1411,12 +1567,14 @@ mod tests {
         let mut state = state_over(fs.clone());
 
         open_tab(&mut state, &path);
-        request_close_tab(&mut state, 0);
+        let clean = tab_id(&state, 0);
+        request_close_tab(&mut state, clean);
         assert!(state.tabs.is_empty(), "a clean tab closes immediately");
 
         open_tab(&mut state, &path);
         edit_active(&mut state, "two\n");
-        request_close_tab(&mut state, 0);
+        let dirty = tab_id(&state, 0);
+        request_close_tab(&mut state, dirty);
         assert_eq!(state.tabs.len(), 1, "a dirty tab waits for confirmation");
         assert!(state.explorer.pending_confirm.is_some());
 
@@ -1446,6 +1604,168 @@ mod tests {
         assert!(run_pending_confirm(&mut state, ConfirmChoice::Alternate));
         assert_eq!(fs.read_file(&path).unwrap(), b"two\n".to_vec());
         assert!(!has_unsaved_work(&state));
+    }
+
+    /// Opens `names` under `/proj` as tabs, each holding its own name as content
+    /// so a buffer can be told apart from its neighbours after a reorder.
+    fn state_with_tabs(names: &[&str]) -> (Rc<FakeFs>, EditorState) {
+        let fs = Rc::new(FakeFs::default());
+        for name in names {
+            fs.write_file(&PathBuf::from("/proj").join(name), name.as_bytes())
+                .unwrap();
+        }
+        let mut state = state_over(fs.clone());
+        for name in names {
+            open_tab(&mut state, &PathBuf::from("/proj").join(name));
+        }
+        (fs, state)
+    }
+
+    fn tab_names(state: &EditorState) -> Vec<&str> {
+        state.tabs.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    #[test]
+    fn move_tab_reorders_and_keeps_the_active_buffer() {
+        let (_fs, mut state) = state_with_tabs(&["a.cpp", "b.cpp", "c.cpp"]);
+        state.active_tab = 1;
+        let active = tab_id(&state, 1);
+
+        // Drag "a.cpp" into the gap before "c.cpp".
+        move_tab(&mut state, 0, 2);
+        assert_eq!(tab_names(&state), ["b.cpp", "a.cpp", "c.cpp"]);
+
+        // The active buffer followed its tab rather than staying in slot 1.
+        assert_eq!(state.tabs[state.active_tab].id, active);
+        assert_eq!(state.tabs[state.active_tab].name, "b.cpp");
+        assert_eq!(state.tabs[state.active_tab].content.text(), Some("b.cpp"));
+
+        // Dropping past the end parks a tab last.
+        move_tab(&mut state, 0, 3);
+        assert_eq!(tab_names(&state), ["a.cpp", "c.cpp", "b.cpp"]);
+        assert_eq!(state.tabs[state.active_tab].id, active);
+    }
+
+    #[test]
+    fn move_tab_ignores_out_of_range_and_no_op_moves() {
+        let (_fs, mut state) = state_with_tabs(&["a.cpp", "b.cpp", "c.cpp"]);
+
+        for (from, insert_before) in [(0, 0), (1, 1), (1, 2), (3, 0), (0, 4), (9, 9)] {
+            move_tab(&mut state, from, insert_before);
+            assert_eq!(
+                tab_names(&state),
+                ["a.cpp", "b.cpp", "c.cpp"],
+                "move_tab({from}, {insert_before}) should have been a no-op"
+            );
+        }
+    }
+
+    #[test]
+    fn close_confirm_targets_the_tab_by_identity_not_slot() {
+        let (fs, mut state) = state_with_tabs(&["a.cpp", "b.cpp", "c.cpp"]);
+
+        // Dirty "c.cpp" and ask to close it; the confirmation is now pending.
+        state.active_tab = 2;
+        edit_active(&mut state, "edited c\n");
+        let doomed = tab_id(&state, 2);
+        request_close_tab(&mut state, doomed);
+        assert!(state.explorer.pending_confirm.is_some());
+
+        // While the modal is up the strip moves under it: the user reorders, and
+        // the watcher prunes a clean tab whose file was deleted outside the app.
+        move_tab(&mut state, 2, 0);
+        fs.files.borrow_mut().remove(Path::new("/proj/a.cpp"));
+        prune_missing(&mut state);
+        assert_eq!(tab_names(&state), ["c.cpp", "b.cpp"]);
+
+        // Discarding must still close "c.cpp" — a stored index would have taken
+        // "b.cpp" (or nothing) with it.
+        run_pending_confirm(&mut state, ConfirmChoice::Primary);
+        assert_eq!(tab_names(&state), ["b.cpp"]);
+        assert_eq!(
+            fs.read_file(Path::new("/proj/c.cpp")).unwrap(),
+            b"c.cpp".to_vec(),
+            "discarding must not have written the buffer"
+        );
+    }
+
+    #[test]
+    fn close_confirm_no_ops_when_its_tab_is_already_gone() {
+        let (fs, mut state) = state_with_tabs(&["a.cpp", "b.cpp"]);
+
+        state.active_tab = 0;
+        edit_active(&mut state, "edited a\n");
+        let doomed = tab_id(&state, 0);
+        request_close_tab(&mut state, doomed);
+
+        // The buffer is saved and the tab closed by some other route before the
+        // user answers, so the pending action's target no longer exists.
+        save_tab(&mut state, 0);
+        close_tab(&mut state, 0);
+        assert_eq!(tab_names(&state), ["b.cpp"]);
+
+        run_pending_confirm(&mut state, ConfirmChoice::Primary);
+        assert_eq!(
+            tab_names(&state),
+            ["b.cpp"],
+            "a confirmation whose tab is gone must not close a bystander"
+        );
+        assert_eq!(
+            fs.read_file(Path::new("/proj/a.cpp")).unwrap(),
+            b"edited a\n"
+        );
+    }
+
+    #[test]
+    fn unsaved_paths_tracks_the_dirty_set() {
+        let (_fs, mut state) = state_with_tabs(&["a.cpp", "b.cpp"]);
+        assert!(unsaved_paths(&state).is_empty());
+
+        state.active_tab = 1;
+        edit_active(&mut state, "edited b\n");
+        assert_eq!(
+            unsaved_paths(&state),
+            HashSet::from([PathBuf::from("/proj/b.cpp")])
+        );
+
+        // The set is keyed on the path, so it survives a reorder unchanged…
+        move_tab(&mut state, 1, 0);
+        assert_eq!(
+            unsaved_paths(&state),
+            HashSet::from([PathBuf::from("/proj/b.cpp")])
+        );
+        // …and empties again on save.
+        assert!(save_tab(&mut state, 0));
+        assert!(unsaved_paths(&state).is_empty());
+    }
+
+    #[test]
+    fn saving_a_background_tab_leaves_the_active_tab_alone() {
+        let (fs, mut state) = state_with_tabs(&["a.cpp", "b.cpp"]);
+
+        // Dirty the background tab, then make the other one active.
+        state.active_tab = 0;
+        edit_active(&mut state, "edited a\n");
+        state.active_tab = 1;
+
+        let background = tab_id(&state, 0);
+        handle_events(
+            &mut state,
+            EditorViewEvents {
+                tab_saved: Some(background),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            fs.read_file(Path::new("/proj/a.cpp")).unwrap(),
+            b"edited a\n"
+        );
+        assert!(!state.tabs[0].unsaved());
+        assert_eq!(
+            state.active_tab, 1,
+            "pressing a background tab's ● must not steal the code pane"
+        );
     }
 
     #[test]
