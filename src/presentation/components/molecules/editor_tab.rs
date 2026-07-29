@@ -3,17 +3,21 @@
 //! stand out. Tabs are also drag sources and drop targets for reordering, and
 //! carry a context menu. Returns what the user did; the caller applies it.
 //!
-//! Two subtleties worth knowing before editing this file:
+//! **The whole tab is one interactive widget.** The ● and the × are painted
+//! decorations whose slots are only reserved during layout, and a click is routed
+//! to one of them by asking which slot the pointer was in. This is not a style
+//! choice — nesting a clickable × inside a clickable tab body silently breaks it:
+//! `egui`'s hit test resolves overlapping widgets by "closest, and on a tie the
+//! one registered last" (`hit_test.rs`, `find_closest_within` with a zero
+//! `max_dist`). Both rects contain the pointer, so the tie always goes to the
+//! body, and the inner button's `clicked()` never fires. Do not "simplify" these
+//! slots back into `Label::sense(Sense::click())`.
 //!
-//! * The tab body is interacted with *after* the inner ● and × widgets and
-//!   overlaps them, so every body action is guarded against the inner ones
-//!   having fired. Add a new inner button → add it to `button_rects` and to the
-//!   `clicked()` guard, or it will double-fire with "activate this tab".
-//! * `Response::dnd_release_payload` *takes* the drag payload, so the landing
-//!   slot must be computed from `dnd_hover_payload` first. Reversing the two
-//!   loses the drop.
+//! One other subtlety: `Response::dnd_release_payload` *takes* the drag payload,
+//! so the landing slot must be computed from `dnd_hover_payload` first. Reversing
+//! the two loses the drop.
 
-use eframe::egui::{self, CornerRadius, RichText};
+use eframe::egui::{self, Align2, CornerRadius, RichText};
 use egui_phosphor::regular as ph;
 
 use crate::presentation::components::atoms::file_icon::file_icon;
@@ -24,8 +28,50 @@ use crate::presentation::theme;
 /// shuffle the rest of the strip sideways.
 const DOT_SLOT: f32 = 14.0;
 const DOT_RADIUS: f32 = 4.0;
+/// Width reserved for the × glyph.
+const CLOSE_SLOT: f32 = 16.0;
 /// Thickness of the "it lands here" line painted during a drag.
 const DROP_INDICATOR_WIDTH: f32 = 2.0;
+
+/// Which part of a tab a pointer position falls on.
+///
+/// Extracted as pure geometry because getting this wrong is invisible: the tab
+/// still paints correctly and still activates on click, it just quietly stops
+/// closing or saving. See the tests at the bottom of this file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabHit {
+    Close,
+    Save,
+    Body,
+}
+
+/// The two button slots inside a tab, and whether the ● is live at all.
+struct HitZones {
+    dot: egui::Rect,
+    close: egui::Rect,
+    unsaved: bool,
+}
+
+impl HitZones {
+    /// Routes a pointer position to a zone. `None` — no pointer — is `Body`,
+    /// which is inert for every caller here.
+    ///
+    /// The ● only claims its slot while the buffer is dirty; on a clean tab that
+    /// area is dead space and belongs to the body, so clicking where a dot *used*
+    /// to be activates the tab rather than doing nothing.
+    fn hit(&self, pos: Option<egui::Pos2>) -> TabHit {
+        let Some(pos) = pos else {
+            return TabHit::Body;
+        };
+        if self.close.contains(pos) {
+            TabHit::Close
+        } else if self.unsaved && self.dot.contains(pos) {
+            TabHit::Save
+        } else {
+            TabHit::Body
+        }
+    }
+}
 
 pub struct EditorTabRequest<'a> {
     pub tab: &'a EditorTab,
@@ -45,7 +91,7 @@ pub struct EditorTabResponse {
     pub clicked: bool,
     /// The close (×) button, or the menu's Close, was clicked.
     pub close_clicked: bool,
-    /// The ● , or the menu's Save, was clicked.
+    /// The ●, or the menu's Save, was clicked.
     pub save_clicked: bool,
     pub save_all_clicked: bool,
     pub copy_path_clicked: bool,
@@ -76,10 +122,8 @@ pub fn editor_tab(ui: &mut egui::Ui, request: EditorTabRequest<'_>) -> EditorTab
         egui::Color32::TRANSPARENT
     };
 
-    // Rects of the inner buttons: a press that lands on one must never start a
-    // tab drag, or the ● and × become unreliable.
-    let mut button_rects: Vec<egui::Rect> = Vec::new();
-
+    // Layout only: reserve the two slots and hand their rects back. Nothing here
+    // senses clicks — see the module comment.
     let inner = egui::Frame::new()
         .fill(fill)
         .corner_radius(CornerRadius::same(theme::CORNER_RADIUS))
@@ -98,70 +142,73 @@ pub fn editor_tab(ui: &mut egui::Ui, request: EditorTabRequest<'_>) -> EditorTab
                         .color(name_color),
                 );
 
-                // The ● slot is always allocated; only the dot is conditional.
-                let row_height = ui.text_style_height(&egui::TextStyle::Body);
-                let sense = if unsaved {
-                    egui::Sense::click()
-                } else {
-                    egui::Sense::hover()
-                };
-                let (dot_rect, dot) =
-                    ui.allocate_exact_size(egui::vec2(DOT_SLOT, row_height), sense);
-                if unsaved {
-                    ui.painter()
-                        .circle_filled(dot_rect.center(), DOT_RADIUS, theme::UNSAVED_DOT);
-                    button_rects.push(dot_rect);
-                    if dot.hovered() {
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                    }
-                    if dot
-                        .on_hover_text(format!("Save ({})", save_shortcut_label()))
-                        .clicked()
-                    {
-                        response.save_clicked = true;
-                    }
-                }
-
-                // Close button, drawn as a small × label made interactive.
-                let close = ui.add(
-                    egui::Label::new(
-                        RichText::new(ph::X)
-                            .font(egui::FontId::proportional(theme::FONT_BODY))
-                            .color(theme::MUTED_ON_DARK),
-                    )
-                    .sense(egui::Sense::click()),
-                );
-                button_rects.push(close.rect);
-                if close.hovered() {
-                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                }
-                if close.on_hover_text("Close").clicked() {
-                    response.close_clicked = true;
-                }
-            });
+                let height = ui.text_style_height(&egui::TextStyle::Body);
+                let (dot_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(DOT_SLOT, height), egui::Sense::hover());
+                let (close_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(CLOSE_SLOT, height), egui::Sense::hover());
+                (dot_rect, close_rect)
+            })
+            .inner
         });
+    let (dot_rect, close_rect) = inner.inner;
 
     let body = ui.interact(
         inner.response.rect,
         inner.response.id,
         egui::Sense::click_and_drag(),
     );
+
+    // Which slot the pointer is in, for hover styling and for routing the click.
+    let zones = HitZones {
+        dot: dot_rect,
+        close: close_rect,
+        unsaved,
+    };
+    let hover = zones.hit(body.hover_pos());
+    let hover_close = hover == TabHit::Close;
+    let hover_dot = hover == TabHit::Save;
+
+    // -- Decorations, painted now that hover state is known ----------------
+    if unsaved {
+        ui.painter()
+            .circle_filled(dot_rect.center(), DOT_RADIUS, theme::UNSAVED_DOT);
+    }
+    if hover_close {
+        ui.painter().rect_filled(
+            close_rect,
+            CornerRadius::same(theme::CORNER_RADIUS),
+            theme::ROW_HOVER,
+        );
+    }
+    ui.painter().text(
+        close_rect.center(),
+        Align2::CENTER_CENTER,
+        ph::X,
+        egui::FontId::proportional(theme::FONT_BODY),
+        if hover_close {
+            egui::Color32::WHITE
+        } else {
+            theme::MUTED_ON_DARK
+        },
+    );
+
     if body.hovered() {
         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
     }
-    // A click anywhere but the ● or the × activates the tab.
-    if body.clicked() && !response.close_clicked && !response.save_clicked {
-        response.clicked = true;
+
+    // -- One click, routed by where it landed -------------------------------
+    match zones.hit(body.interact_pointer_pos()) {
+        _ if !body.clicked() => {}
+        TabHit::Close => response.close_clicked = true,
+        TabHit::Save => response.save_clicked = true,
+        TabHit::Body => response.clicked = true,
     }
 
     // -- Drag source ------------------------------------------------------
     // Set by hand rather than via `dnd_set_drag_payload` so a press that began
-    // on the ● or the × can be excluded.
-    if body.drag_started()
-        && !body
-            .interact_pointer_pos()
-            .is_some_and(|pos| button_rects.iter().any(|r| r.contains(pos)))
-    {
+    // on the ● or the × can be excluded (they are buttons, not grab handles).
+    if body.drag_started() && zones.hit(body.interact_pointer_pos()) == TabHit::Body {
         egui::DragAndDrop::set_payload(ui.ctx(), tab.id);
     }
 
@@ -190,6 +237,15 @@ pub fn editor_tab(ui: &mut egui::Ui, request: EditorTabRequest<'_>) -> EditorTab
     }
 
     body.context_menu(|ui| tab_menu(ui, tab, unsaved, any_unsaved, &mut response));
+
+    // Tooltips describe whatever the pointer is actually over, so the single
+    // body response can still explain three different hit zones.
+    if hover_close {
+        body.clone().on_hover_text("Close");
+    } else if hover_dot {
+        body.clone()
+            .on_hover_text(format!("Save ({})", save_shortcut_label()));
+    }
 
     if scroll_to {
         body.scroll_to_me(Some(egui::Align::Center));
@@ -242,4 +298,53 @@ fn menu_item(ui: &mut egui::Ui, enabled: bool, glyph: &str, label: &str) -> egui
         enabled,
         egui::Button::new(format!("{glyph}   {label}")).frame(false),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Rect, pos2};
+
+    /// A tab laid out like the real one: body from x=0..100, with the ● slot at
+    /// 60..74 and the × slot at 74..90.
+    fn zones(unsaved: bool) -> HitZones {
+        HitZones {
+            dot: Rect::from_min_max(pos2(60.0, 0.0), pos2(74.0, 20.0)),
+            close: Rect::from_min_max(pos2(74.0, 0.0), pos2(90.0, 20.0)),
+            unsaved,
+        }
+    }
+
+    #[test]
+    fn the_close_slot_closes() {
+        // Regression: this is the click that silently did nothing, because an
+        // inner clickable × always lost egui's hit-test tie to the tab body.
+        assert_eq!(zones(true).hit(Some(pos2(82.0, 10.0))), TabHit::Close);
+        assert_eq!(zones(false).hit(Some(pos2(82.0, 10.0))), TabHit::Close);
+    }
+
+    #[test]
+    fn the_dot_slot_saves_only_while_dirty() {
+        assert_eq!(zones(true).hit(Some(pos2(67.0, 10.0))), TabHit::Save);
+        // Clean tab: no dot is painted, so its slot is dead space for the body.
+        assert_eq!(zones(false).hit(Some(pos2(67.0, 10.0))), TabHit::Body);
+    }
+
+    #[test]
+    fn the_rest_of_the_tab_activates_it() {
+        assert_eq!(zones(true).hit(Some(pos2(20.0, 10.0))), TabHit::Body);
+        // The name area, right up to the dot slot.
+        assert_eq!(zones(true).hit(Some(pos2(59.9, 10.0))), TabHit::Body);
+    }
+
+    #[test]
+    fn no_pointer_is_inert() {
+        assert_eq!(zones(true).hit(None), TabHit::Body);
+    }
+
+    #[test]
+    fn the_slots_do_not_overlap() {
+        // If they ever did, the ● and × would fight for the same clicks again.
+        assert!(!zones(true).dot.intersects(zones(true).close.shrink(0.01)));
+    }
 }
