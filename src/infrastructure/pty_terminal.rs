@@ -504,6 +504,43 @@ mod tests {
         );
     }
 
+    /// A failed build's diagnostics must still be on screen after the child is
+    /// gone — that output *is* the reason to look at the panel.
+    ///
+    /// Two things make it work and both are load-bearing: `drain_on_exit` in
+    /// `open`, which reads the last bytes before the reader shuts down, and
+    /// keeping the `Term` alive after `ChildExit`.
+    #[test]
+    #[cfg(unix)]
+    fn output_survives_the_child_that_produced_it() {
+        let terminal = PtyTerminal::new(Arc::new(|| {}));
+        let shell = ShellChoice::new(
+            "/bin/sh",
+            &["-c", "echo error: undefined reference; exit 2"],
+        );
+        let session = terminal
+            .open(&shell, Path::new("/"), size(), test_palette())
+            .expect("PTY should open");
+
+        let mut events = Vec::new();
+        let finished = wait_for(session.as_ref(), &mut events, |session, events| {
+            events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::ChildExit(_)))
+                && screen_text(session).contains("undefined reference")
+        });
+
+        assert!(
+            finished,
+            "the error line must outlive the process; grid was {:?}",
+            screen_text(session.as_ref())
+        );
+
+        // And it is still there on a later read, not just once.
+        assert!(screen_text(session.as_ref()).contains("error: undefined reference"));
+        assert!(events.contains(&TerminalEvent::ChildExit(Some(2))));
+    }
+
     #[test]
     #[cfg(unix)]
     fn a_failing_command_reports_its_non_zero_status() {

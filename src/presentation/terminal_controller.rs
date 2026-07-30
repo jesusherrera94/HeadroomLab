@@ -654,6 +654,14 @@ mod tests {
             port.opened.borrow()[0].written.borrow().is_empty(),
             "a dead session must not be written to"
         );
+
+        // The emulator outlives its child, so the output stays readable. This is
+        // what lets the panel show a failed build's errors after `make` exits —
+        // dropping the session here would take the diagnostics with it.
+        assert!(
+            active_snapshot(&state).is_some(),
+            "an exited session must keep its scrollback: it is the build log"
+        );
     }
 
     #[test]

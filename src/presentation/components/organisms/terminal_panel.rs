@@ -124,14 +124,23 @@ fn header(ui: &mut egui::Ui, state: &mut TerminalState) {
     ui.add_space(2.0);
 }
 
-/// A tab's caption: its title, with a build's outcome shown as a coloured dot.
+/// A tab's caption: its title, with a build's outcome as a leading glyph.
+///
+/// The glyphs come from **Phosphor**, not from literal `●`/`✓`/`✕`. Those live
+/// outside the bundled text fonts and outside Phosphor's private-use range, so
+/// writing them renders a tofu box — the same trap `status_bar::unsaved_segment`
+/// documents, which is why it paints its dot instead.
 fn tab_label(session: &crate::presentation::terminal_controller::Session) -> String {
     use crate::domain::terminal::BuildStatus;
-    match (session.kind, session.status) {
-        (SessionKind::Build(_), Some(BuildStatus::Running)) => format!("{} ●", session.title),
-        (SessionKind::Build(_), Some(BuildStatus::Succeeded)) => format!("{} ✓", session.title),
-        (SessionKind::Build(_), Some(BuildStatus::Failed(_))) => format!("{} ✕", session.title),
-        _ => session.title.clone(),
+    let marker = match (session.kind, session.status) {
+        (SessionKind::Build(_), Some(BuildStatus::Running)) => Some(ph::SPINNER_GAP),
+        (SessionKind::Build(_), Some(BuildStatus::Succeeded)) => Some(ph::CHECK_CIRCLE),
+        (SessionKind::Build(_), Some(BuildStatus::Failed(_))) => Some(ph::X_CIRCLE),
+        _ => None,
+    };
+    match marker {
+        Some(marker) => format!("{marker} {}", session.title),
+        None => session.title.clone(),
     }
 }
 
@@ -195,42 +204,118 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
         return;
     }
 
-    if let Some(notice_text) = session.exit_notice() {
+    // A child that has exited leaves its output behind: the emulator is still
+    // alive, holding the whole scrollback. So the notice is a strip *above* the
+    // grid, never a replacement for it — a failed build's output is exactly what
+    // the user needs at the moment it stops running.
+    if let Some(text) = session.exit_notice() {
+        let failed = matches!(
+            (session.kind, session.status),
+            (
+                SessionKind::Build(_),
+                Some(crate::domain::terminal::BuildStatus::Failed(_))
+            )
+        );
         let id = session.id;
-        notice(ui, &notice_text, theme::MUTED_ON_DARK, "Restart", || {
-            terminal_controller::restart(state, id)
-        });
-        return;
+        let restart = exit_strip(ui, &text, failed);
+        if restart {
+            terminal_controller::restart(state, id);
+            return;
+        }
     }
 
     let Some(snapshot) = terminal_controller::active_snapshot(state) else {
         return;
     };
 
-    let response = ui.allocate_response(
+    // Exactly **one** widget covers the grid, and it owns `focus_id()`.
+    //
+    // Two widgets over the same rect would be a silent trap: the one registered
+    // later wins the hit test, so an `allocate_response` here plus a separate
+    // `interact` for the focus id would leave the first response's `clicked()`
+    // permanently false — the terminal could never be focused and would swallow
+    // every keystroke. Allocating with `hover` and then interacting with our own
+    // id keeps it to one.
+    //
+    // `Sense::click_and_drag()` already implies `FOCUSABLE`, and interacting
+    // every frame is what keeps egui's dead-man's switch (`Focus::end_pass`)
+    // from dropping the focus of a widget it thinks has disappeared.
+    let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ui.available_height()),
-        egui::Sense::click_and_drag(),
+        egui::Sense::hover(),
     );
-    let origin = response.rect.min;
+    let response = ui.interact(rect, focus_id(), egui::Sense::click_and_drag());
+    let origin = rect.min;
 
     paint_grid(ui, &snapshot, origin, cell_width, cell_height);
 
-    if response.clicked() {
-        ui.memory_mut(|memory| memory.request_focus(focus_id()));
+    // Clicking anywhere in the grid takes the keyboard, the same way clicking
+    // into the code editor does.
+    if response.clicked() || response.drag_started() {
+        response.request_focus();
     }
-    // `interact` registers the id with egui's focus system; without it,
-    // `request_focus` on an id nothing claims is dropped at the frame boundary.
-    ui.interact(response.rect, focus_id(), egui::Sense::click());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+    }
 
     handle_mouse(ui, state, &response, origin, cell_width, cell_height);
+
+    // `has_focus` here rather than `Response::has_focus`, which also requires
+    // `input.focused` — a viewport-level flag whose value for an immediate child
+    // viewport (which the Editor window is) would silently gate out every
+    // keystroke. egui's own `TextEdit` gates on the memory check alone.
     if has_focus(ui.ctx()) {
+        // Claim the keys egui otherwise reserves for focus navigation. Without
+        // this, Tab moves focus to the next widget instead of completing a
+        // filename, the arrows walk the widget tree instead of shell history,
+        // and Escape drops focus instead of leaving vim's insert mode — none of
+        // which would ever reach the PTY. `TextEdit::lock_focus` does the same
+        // thing for the same reason.
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                focus_id(),
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
         handle_keys(ui, state, requests);
     }
+
     handle_scroll(ui, state, &response);
 }
 
-/// A centred message with a single action — used for both a session that could
-/// not start and one whose child has exited.
+/// One compact row reporting that the child has exited, with a Restart button.
+/// Returns whether Restart was pressed.
+///
+/// Deliberately thin: it sits above the grid rather than replacing it, so the
+/// scrollback stays readable, selectable and copyable after the process is gone.
+fn exit_strip(ui: &mut egui::Ui, message: &str, failed: bool) -> bool {
+    let mut restart = false;
+    ui.horizontal(|ui| {
+        let color = if failed {
+            theme::ERROR_COLOR
+        } else {
+            theme::MUTED_ON_DARK
+        };
+        ui.label(
+            RichText::new(message)
+                .font(egui::FontId::monospace(theme::FONT_BODY))
+                .color(color),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            restart = ui.add(theme::selectable_button("Restart", false)).clicked();
+        });
+    });
+    ui.add_space(4.0);
+    restart
+}
+
+/// A centred message with a single action — used for a session that could not
+/// start at all, where there is no grid to show behind it.
 fn notice(
     ui: &mut egui::Ui,
     message: &str,
