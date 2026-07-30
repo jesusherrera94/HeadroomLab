@@ -5,6 +5,7 @@ pub mod graph_controller;
 pub mod initial_controller;
 pub mod simulation_controller;
 pub mod syntax;
+pub mod terminal_controller;
 pub mod theme;
 pub mod window_manager;
 pub mod windows;

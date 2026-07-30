@@ -1,7 +1,7 @@
 //! The Editor window: the VS Code-style IDE shell. Composes the toolbar,
 //! explorer, tab strip, code area, terminal and status bar as nested panels.
-//! The explorer and the code area are live; the terminal remains a mock until
-//! the PTY task.
+//! Every panel is live: the terminal runs real PTY sessions, and the toolbar's
+//! build buttons feed their `make` target into its Build tab.
 
 use eframe::egui;
 
@@ -14,7 +14,7 @@ use crate::presentation::components::organisms::code_pane::code_pane;
 use crate::presentation::components::organisms::editor_toolbar::editor_toolbar;
 use crate::presentation::components::organisms::file_explorer::file_explorer;
 use crate::presentation::components::organisms::status_bar::{StatusInfo, status_bar};
-use crate::presentation::components::organisms::terminal_panel::terminal_panel;
+use crate::presentation::components::organisms::terminal_panel;
 use crate::presentation::editor_controller::{self, EditorState, EditorViewEvents};
 
 /// Cmd+S / Ctrl+S — save the active buffer.
@@ -34,10 +34,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
 
     // Consume the editor shortcuts before any widget sees the keys. Save-all is
     // checked first: it also matches the plain save shortcut's key.
+    //
+    // While the terminal has focus it gets every key it can use, so ⌘F reaches
+    // a shell program that wants it. Save is the exception: "save my work" must
+    // not depend on where the caret happens to be, so it stays global.
+    let terminal_focused = terminal_panel::has_focus(ui.ctx());
     ui.input_mut(|input| {
         events.code.save_all = input.consume_shortcut(&SAVE_ALL);
         events.code.save = !events.code.save_all && input.consume_shortcut(&SAVE);
-        events.code.open_find = input.consume_shortcut(&FIND);
+        if !terminal_focused {
+            events.code.open_find = input.consume_shortcut(&FIND);
+        }
     });
 
     // Toolbar (full-width, top).
@@ -58,6 +65,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
                 project_name: &state.project_name,
                 tab: state.tabs.get(state.active_tab),
                 cursor: state.cursor,
+                build: state.terminal.build_status(),
             },
         );
         events.code.save |= bar.save;
@@ -81,7 +89,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         .resizable(true)
         .default_size(160.0)
         .show(ui, |ui| {
-            terminal_panel(ui, &state.terminal_lines);
+            let requests = terminal_panel::terminal_panel(ui, &mut state.terminal);
+            // Clipboard writes and the error banner are the window's to serve —
+            // the controller stays free of egui.
+            if let Some(text) = requests.copy {
+                ui.ctx().copy_text(text);
+            }
+            if let Some(error) = requests.error {
+                state.explorer.error = Some(error);
+            }
+            // A successful `make dylib` opens the simulator on what it just
+            // built, through the same path the toolbar's own button uses.
+            events.open_emulator |= requests.launch_simulator;
         });
 
     // Editor: tab strip on top, code area filling the rest.

@@ -20,6 +20,7 @@ opener = { version = "0.8", features = ["reveal"] }
 notify = "8"
 egui_extras = { version = "0.35.0", default-features = false, features = ["syntect"] }
 arboard = { version = "3.6", features = ["wayland-data-control"] }
+alacritty_terminal = "0.26"
 
 [profile.release]
 codegen-units = 1

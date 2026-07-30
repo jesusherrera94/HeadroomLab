@@ -19,15 +19,17 @@ use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 use crate::application::file_system_service::FileSystemService;
 use crate::application::graph_service::GraphService;
 use crate::application::ports::{
-    ClipboardPort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort,
+    ClipboardPort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort, TerminalPort,
 };
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
 use crate::domain::project::{RecentProject, sanitize_target};
+use crate::domain::terminal::BuildKind;
 use crate::presentation::components::organisms::code_pane;
 use crate::presentation::editor_controller::{self, EditorState};
 use crate::presentation::initial_controller::{self, InitialState, ProjectIntent};
 use crate::presentation::simulation_controller;
+use crate::presentation::terminal_controller;
 use crate::presentation::window_manager::WindowManager;
 use crate::presentation::windows::{
     editor_window, graph_window, initial_window, simulator_window, splash_window,
@@ -54,6 +56,7 @@ pub struct HeadroomApp {
     fs_service: Rc<FileSystemService>,
     file_watcher: Rc<dyn FileWatcherPort>,
     clipboard: Rc<dyn ClipboardPort>,
+    terminal: Rc<dyn TerminalPort>,
     windows: WindowManager,
 
     screen: Screen,
@@ -77,6 +80,7 @@ impl HeadroomApp {
         fs_service: Rc<FileSystemService>,
         file_watcher: Rc<dyn FileWatcherPort>,
         clipboard: Rc<dyn ClipboardPort>,
+        terminal: Rc<dyn TerminalPort>,
     ) -> Self {
         Self {
             sim_service,
@@ -87,6 +91,7 @@ impl HeadroomApp {
             fs_service,
             file_watcher,
             clipboard,
+            terminal,
             windows: WindowManager::default(),
             screen: Screen::Splash,
             splash_started: Instant::now(),
@@ -173,6 +178,7 @@ impl HeadroomApp {
             self.fs_service.clone(),
             self.file_watcher.clone(),
             self.clipboard.clone(),
+            self.terminal.clone(),
         ));
         self.current_project = Some(project);
         self.screen = Screen::Editor;
@@ -226,8 +232,28 @@ impl HeadroomApp {
             },
         );
 
+        // The toolbar's build buttons run their `make` target in the terminal's
+        // Build tab. Deliberately *not* followed by launching the simulator:
+        // "Open emulator" stays the only thing that opens it, so a build never
+        // yanks a window open behind the user's back.
+        if let Some(state) = self.editor.as_mut() {
+            let kind = if requests.build_run {
+                Some(BuildKind::Dylib)
+            } else if requests.compile {
+                Some(BuildKind::Firmware)
+            } else {
+                None
+            };
+
+            if let Some(kind) = kind {
+                let build = terminal_controller::run_build(&mut state.terminal, kind);
+                if let Some(error) = build.error {
+                    state.explorer.error = Some(error);
+                }
+            }
+        }
+
         // "Open emulator" launches the simulator on the project's built dylib.
-        // "Build & run" and "Compile" are wired to the terminal in a later task.
         if requests.open_emulator {
             self.launch_simulator();
         }

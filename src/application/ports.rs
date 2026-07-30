@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::domain::file_system::FileSystemError;
 use crate::domain::plugin::PluginError;
 use crate::domain::project::RecentProject;
+use crate::domain::terminal::{ShellChoice, TerminalPalette, TerminalSize, TerminalSnapshot};
 // Port: the application depends on this abstraction.
 
 /// Failure persisting the recents list. Save failures are logged, never
@@ -110,6 +111,82 @@ pub trait FileWatchSession {
 /// Starts watching a project directory tree for external changes.
 pub trait FileWatcherPort {
     fn watch(&self, root: &Path) -> Result<Box<dyn FileWatchSession>, FileSystemError>;
+}
+
+/// Why a terminal session could not be started. Rendered inside the session's
+/// own tab rather than as a modal — a terminal that will not open is not a
+/// reason to block the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalError(pub String);
+
+impl std::fmt::Display for TerminalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Something the terminal reported since the last drain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalEvent {
+    /// New output is available; the screen needs repainting.
+    Wakeup,
+    /// A program set the window title (`\e]0;…`), which names the tab.
+    Title(String),
+    /// The child process ended. `None` when it was killed by a signal.
+    ChildExit(Option<i32>),
+    /// The terminal asked for text to be put on the clipboard (OSC 52).
+    ClipboardStore(String),
+    /// The terminal asked for the clipboard's contents to be written back to it.
+    ClipboardLoad,
+    Bell,
+}
+
+/// Starts terminal sessions. The concrete emulator (`alacritty_terminal`) stays
+/// behind this, so nothing above `infrastructure` names it.
+pub trait TerminalPort {
+    fn open(
+        &self,
+        shell: &ShellChoice,
+        cwd: &Path,
+        size: TerminalSize,
+        palette: TerminalPalette,
+    ) -> Result<Box<dyn TerminalSession>, TerminalError>;
+}
+
+/// One live PTY-backed session.
+///
+/// Deliberately hands out a [`TerminalSnapshot`] rather than the emulator's own
+/// grid: keeping external types out of the ports is the same rule
+/// `AudioEnginePort` follows with `AudioSnapshot`.
+pub trait TerminalSession {
+    /// Sends bytes to the child — typed characters, control codes, pasted text.
+    fn write(&self, bytes: &[u8]);
+
+    /// Tells the child its new grid size. Cheap to call with an unchanged size,
+    /// but callers only do so on a real change (reflow is not free).
+    fn resize(&self, size: TerminalSize);
+
+    /// A copy of the visible screen for this frame.
+    fn snapshot(&self) -> TerminalSnapshot;
+
+    /// Everything reported since the last call. Draining rather than peeking, so
+    /// each event is acted on once.
+    fn drain_events(&self) -> Vec<TerminalEvent>;
+
+    /// Scrolls the view within the scrollback by `lines` (positive scrolls back).
+    fn scroll(&self, lines: i32);
+
+    /// Empties the scrollback and the screen.
+    fn clear(&self);
+
+    /// Replaces the current mouse selection, in cell coordinates, or clears it.
+    fn select(&self, range: Option<((u16, u16), (u16, u16))>);
+
+    /// The text of the current selection, for copying.
+    fn selection_text(&self) -> Option<String>;
+
+    /// Ends the child process. Called on drop, and by the build's kill-and-restart.
+    fn kill(&self);
 }
 
 /// Reads the system clipboard, for the code editor's **Paste** menu item.
