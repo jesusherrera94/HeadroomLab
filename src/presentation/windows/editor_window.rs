@@ -142,7 +142,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
 
         egui::CentralPanel::default().show(ui, |ui| {
             let active = state.active_tab;
-            let pane = code_pane(ui, state.tabs.get_mut(active));
+            // Cloned out before the tabs are borrowed mutably; the code editor's
+            // Paste menu item needs it, and egui has no clipboard read of its own.
+            let clipboard = state.clipboard.clone();
+            let pane = code_pane(ui, state.tabs.get_mut(active), clipboard.as_ref());
             events.code.edited = pane.edited;
             events.code.reload = pane.reload;
             events.code.close_find |= pane.close_find;

@@ -112,6 +112,23 @@ pub trait FileWatcherPort {
     fn watch(&self, root: &Path) -> Result<Box<dyn FileWatchSession>, FileSystemError>;
 }
 
+/// Reads the system clipboard, for the code editor's **Paste** menu item.
+///
+/// Read-only by design. egui exposes no clipboard read at all — it only receives
+/// paste events the OS sends it, which is why the keyboard `⌘V` needs nothing
+/// from us — but it *does* own clipboard writes through `Context::copy_text`,
+/// and those must keep going through egui: on X11 the copying process has to
+/// stay alive to serve the selection, so a second owner in the same app would
+/// fight it.
+///
+/// `None` covers both an empty clipboard and one that cannot be reached at all
+/// (no display server, another process holding it). The caller greys out Paste
+/// either way — a clipboard that isn't there is not something the user can act
+/// on, so it never reaches the error banner.
+pub trait ClipboardPort {
+    fn read(&self) -> Option<String>;
+}
+
 pub struct AudioMetadata {
     pub duration_seconds: f32,
     pub sample_rate: u32,
