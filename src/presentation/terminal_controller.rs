@@ -6,10 +6,12 @@
 //! program asks via OSC 52) leaves as a [`TerminalRequests`] for the window to
 //! carry out.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::application::ports::{ClipboardPort, TerminalEvent, TerminalPort, TerminalSession};
+use crate::domain::diagnostics::{Counts, Diagnostic, counts, parse_diagnostics};
 use crate::domain::terminal::{
     BuildKind, BuildStatus, BuildUnavailable, GIT_FOR_WINDOWS_URL, Platform, SCROLLBACK_LINES,
     ShellChoice, TerminalPalette, TerminalSize, TerminalSnapshot, build_command, shell_for,
@@ -97,6 +99,13 @@ pub struct TerminalState {
     /// Sub-line scroll pixels carried between frames, so a trackpad's many
     /// small deltas add up to a line instead of each rounding away to nothing.
     pub scroll_carry: f32,
+    /// What the last build complained about. Replaced wholesale by each build.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Files edited since the build that produced `diagnostics`. Their line
+    /// numbers no longer mean what the compiler meant, so their squiggles are
+    /// dropped and their rows dimmed — but the rows stay, because the error the
+    /// user is in the middle of fixing should not vanish as they type.
+    pub stale_files: HashSet<PathBuf>,
 }
 
 impl TerminalState {
@@ -125,6 +134,8 @@ impl TerminalState {
             missing_git_bash: false,
             opened_once: false,
             scroll_carry: 0.0,
+            diagnostics: Vec::new(),
+            stale_files: HashSet::new(),
         }
     }
 
@@ -143,6 +154,17 @@ impl TerminalState {
 
     fn index_of(&self, id: SessionId) -> Option<usize> {
         self.sessions.iter().position(|s| s.id == id)
+    }
+
+    /// How many errors and warnings the last build produced, for the status bar.
+    /// Totals over the whole project, never filtered to the active file.
+    pub fn diagnostic_counts(&self) -> Counts {
+        counts(&self.diagnostics)
+    }
+
+    /// Whether `path`'s diagnostics have been invalidated by an edit.
+    pub fn is_stale(&self, path: &Path) -> bool {
+        self.stale_files.contains(path)
     }
 
     /// The build session's status, for the status bar.
@@ -344,6 +366,10 @@ pub fn run_build(state: &mut TerminalState, kind: BuildKind) -> TerminalRequests
     };
 
     state.missing_git_bash = false;
+    // The previous build's complaints go before the new build starts, so the
+    // strip never shows a mix of two runs.
+    state.diagnostics.clear();
+    state.stale_files.clear();
 
     // Reuse the Build tab if there is one, so repeated builds do not pile up
     // tabs; its child is killed on the way (D7).
@@ -379,6 +405,7 @@ pub fn run_build(state: &mut TerminalState, kind: BuildKind) -> TerminalRequests
 pub fn tick(state: &mut TerminalState) -> TerminalRequests {
     let mut requests = TerminalRequests::default();
     let mut load_clipboard_for: Option<usize> = None;
+    let mut parsed: Option<Vec<Diagnostic>> = None;
 
     for (index, session) in state.sessions.iter_mut().enumerate() {
         let Some(inner) = &session.inner else {
@@ -402,6 +429,12 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
 
                 TerminalEvent::ChildExit(code) => {
                     session.exited = Some(code);
+                    if let SessionKind::Build(_) = session.kind {
+                        // Parsed once, here, rather than every frame: the output
+                        // is final the moment the child is gone, and walking the
+                        // whole scrollback per frame would be wasteful.
+                        parsed = Some(parse_diagnostics(&inner.logical_text()));
+                    }
                     if let SessionKind::Build(kind) = session.kind {
                         let status = match code {
                             Some(0) => BuildStatus::Succeeded,
@@ -434,8 +467,14 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
         }
     }
 
-    // Deferred: reading the clipboard needs `state.clipboard` while the loop
-    // above holds `state.sessions` mutably.
+    // Deferred: both of these need other fields of `state` while the loop above
+    // holds `state.sessions` mutably.
+    if let Some(diagnostics) = parsed {
+        state.diagnostics = diagnostics;
+        state.stale_files.clear();
+    }
+
+    // Reading the clipboard needs `state.clipboard`.
     if let Some(index) = load_clipboard_for
         && let Some(text) = state.clipboard.read()
         && let Some(inner) = state.sessions[index].inner.as_ref()
@@ -471,6 +510,9 @@ mod tests {
         cleared: RefCell<bool>,
         resized: RefCell<Vec<TerminalSize>>,
         events: RefCell<Vec<TerminalEvent>>,
+        /// What the session would report as its logical output — the build log a
+        /// test wants diagnostics parsed from.
+        output: RefCell<String>,
     }
 
     impl TerminalSession for Rc<FakeInner> {
@@ -495,6 +537,9 @@ mod tests {
                 display_offset: 0,
                 history_len: 0,
             }
+        }
+        fn logical_text(&self) -> String {
+            self.output.borrow().clone()
         }
         fn drain_events(&self) -> Vec<TerminalEvent> {
             std::mem::take(&mut *self.events.borrow_mut())
@@ -771,6 +816,89 @@ mod tests {
             .push(TerminalEvent::ChildExit(Some(code)));
         let requests = tick(&mut state);
         (requests, state)
+    }
+
+    #[test]
+    fn a_build_parses_its_own_output_into_diagnostics() {
+        let port = Rc::new(FakePort::default());
+        let mut state = state_over(port.clone(), None);
+        run_build(&mut state, BuildKind::Dylib);
+
+        let build = port.opened.borrow().last().cloned().unwrap();
+        *build.output.borrow_mut() = "\
+effect_processor.cpp:14:24: error: use of undeclared identifier 'cutof'
+effect_processor.cpp:9:11: warning: unused variable 'dryMix' [-Wunused-variable]
+make: *** [build/libtest3.dylib] Error 1"
+            .to_string();
+        build
+            .events
+            .borrow_mut()
+            .push(TerminalEvent::ChildExit(Some(2)));
+        tick(&mut state);
+
+        assert_eq!(state.diagnostics.len(), 3);
+        assert_eq!(
+            state.diagnostic_counts(),
+            Counts {
+                errors: 2,
+                warnings: 1
+            }
+        );
+        assert_eq!(state.diagnostics[0].line, Some(14));
+    }
+
+    #[test]
+    fn a_new_build_clears_the_previous_complaints_before_it_starts() {
+        let port = Rc::new(FakePort::default());
+        let mut state = state_over(port.clone(), None);
+        run_build(&mut state, BuildKind::Dylib);
+
+        let first = port.opened.borrow().last().cloned().unwrap();
+        *first.output.borrow_mut() = "a.cpp:1:1: error: stale".to_string();
+        first
+            .events
+            .borrow_mut()
+            .push(TerminalEvent::ChildExit(Some(1)));
+        tick(&mut state);
+        assert_eq!(state.diagnostics.len(), 1);
+        state.stale_files.insert(PathBuf::from("/proj/a.cpp"));
+
+        // Pressing build again must not leave a mix of two runs on screen.
+        run_build(&mut state, BuildKind::Dylib);
+        assert!(state.diagnostics.is_empty());
+        assert!(state.stale_files.is_empty());
+    }
+
+    #[test]
+    fn a_shell_exiting_never_touches_the_diagnostics() {
+        let port = Rc::new(FakePort::default());
+        let mut state = state_over(port.clone(), None);
+        run_build(&mut state, BuildKind::Dylib);
+
+        let build = port.opened.borrow().last().cloned().unwrap();
+        *build.output.borrow_mut() = "a.cpp:1:1: error: real".to_string();
+        build
+            .events
+            .borrow_mut()
+            .push(TerminalEvent::ChildExit(Some(1)));
+        tick(&mut state);
+        assert_eq!(state.diagnostics.len(), 1);
+
+        // A shell whose user typed `exit` is not a build result.
+        open_shell(&mut state);
+        let shell = port.opened.borrow().last().cloned().unwrap();
+        *shell.output.borrow_mut() = "some unrelated shell output".to_string();
+        shell
+            .events
+            .borrow_mut()
+            .push(TerminalEvent::ChildExit(Some(0)));
+        tick(&mut state);
+
+        assert_eq!(
+            state.diagnostics.len(),
+            1,
+            "only a Build session's exit replaces the diagnostics"
+        );
     }
 
     #[test]

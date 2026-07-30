@@ -329,6 +329,9 @@ pub struct EditorTab {
     pub history_reset: bool,
     /// Live find state, present only while the find bar is open.
     pub find: Option<FindState>,
+    /// A character range to select and scroll to on the next paint — how a
+    /// problems-strip jump moves the caret. Consumed by `code_pane`.
+    pub pending_select: Option<std::ops::Range<usize>>,
 }
 
 impl EditorTab {
@@ -364,6 +367,7 @@ impl EditorTab {
             external_change: false,
             history_reset: false,
             find: None,
+            pending_select: None,
         }
     }
 
@@ -590,6 +594,51 @@ impl EditorState {
     }
 }
 
+/// Opens the file a problems-strip row names and puts the caret on its
+/// diagnostic.
+///
+/// The compiler writes paths relative to `make`'s working directory, which is
+/// the project root — so a bare `effect_processor.cpp` is resolved against it.
+/// An absolute path is used as-is. When neither names a file that exists, the
+/// last resort is matching an already-open tab by file name, which covers a
+/// build whose paths do not survive (git-bash's `/c/...` on Windows).
+pub fn jump_to_diagnostic(state: &mut EditorState, file: &str, line: u32, column: Option<u32>) {
+    let candidate = Path::new(file);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        state.project_path.join(candidate)
+    };
+
+    let path = if state.fs.exists(&resolved) {
+        resolved
+    } else {
+        let name = candidate.file_name();
+        match state
+            .tabs
+            .iter()
+            .find(|tab| name.is_some_and(|n| tab.path.file_name() == Some(n)))
+        {
+            Some(tab) => tab.path.clone(),
+            None => {
+                state.explorer.error = Some(format!("Could not find {file}"));
+                return;
+            }
+        }
+    };
+
+    open_tab(state, &path);
+
+    // Resolved against the buffer that is now open, so the span matches what is
+    // actually on screen rather than what was on disk at build time.
+    if let Some(tab) = state.tabs.get_mut(state.active_tab)
+        && let Some(text) = tab.content.text()
+        && let Some(span) = crate::domain::diagnostics::span_in(text, line, column)
+    {
+        tab.pending_select = Some(span);
+    }
+}
+
 /// Takes the tabs that went away since the last call, so the view can drop each
 /// one's editor state. Drained rather than read, so an id is acted on once.
 pub fn take_discarded_tabs(state: &mut EditorState) -> Vec<TabId> {
@@ -801,6 +850,15 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
 }
 
 fn handle_code(state: &mut EditorState, events: CodeEvents) {
+    // An edit invalidates the compiler's line numbers for that file, so its
+    // squiggles go and its rows in the problems strip dim. The rows themselves
+    // stay until the next build — the error being fixed should not vanish the
+    // moment the user types the first character of the fix.
+    if events.edited
+        && let Some(tab) = state.tabs.get(state.active_tab)
+    {
+        state.terminal.stale_files.insert(tab.path.clone());
+    }
     if events.save {
         save_active(state);
     }

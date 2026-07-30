@@ -50,6 +50,10 @@ pub struct CodeEditorRequest<'a> {
     /// Read side of the system clipboard, for the context menu's Paste. The
     /// keyboard `⌘V` never comes through here — egui gets that as an OS event.
     pub clipboard: &'a dyn ClipboardPort,
+    /// Character ranges to mark with a squiggle, and the colour of each. Empty
+    /// once the buffer has been edited: the compiler's line numbers no longer
+    /// describe this text.
+    pub squiggles: &'a [(Range<usize>, egui::Color32)],
 }
 
 pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEditorOutput {
@@ -61,6 +65,7 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
         select,
         match_range,
         clipboard,
+        squiggles,
     } = request;
 
     // Rewrite Tab / Enter / opening-pair keys, and run the editor commands,
@@ -135,8 +140,10 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                     // never drawn — it looks like the item did nothing.
                     ui.memory_mut(|memory| memory.request_focus(id));
                     menu_outcome = run_command(ui, id, text, language, clipboard, command);
-                    result.changed |= menu_outcome.is_some();
+                    result.changed |= menu_outcome.as_ref().is_some_and(|o| o.changed);
                 }
+
+                paint_squiggles(ui, &output.galley, output.galley_pos, squiggles);
 
                 // Auto-closed a pair: step back between the two characters.
                 if pending.step_back_one
@@ -154,6 +161,10 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                 // result, or a find hit. A command wins — the two cannot both
                 // occur in one frame, since a find selection only ever arises
                 // from interacting with the find bar.
+                // A keyboard command mutated the buffer before the widget ran,
+                // so egui's own `changed()` missed it.
+                result.changed |= pending.outcome.as_ref().is_some_and(|o| o.changed);
+
                 let selection = menu_outcome
                     .or(pending.outcome)
                     .map(|outcome| (outcome.selection, outcome.scroll))
@@ -203,6 +214,13 @@ struct PendingFixups {
 struct CommandOutcome {
     selection: Range<usize>,
     scroll: bool,
+    /// Whether the command rewrote the buffer.
+    ///
+    /// Not derivable from egui: a keyboard command mutates `text` *before* the
+    /// `TextEdit` runs, so `Response::changed()` is false for it. Callers that
+    /// care whether the buffer moved — the dirty dot, and marking a file's
+    /// diagnostics stale — need this instead.
+    changed: bool,
 }
 
 /// Rewrites this frame's key events so the `TextEdit` behaves like a code
@@ -316,6 +334,63 @@ fn rewrite_events(
     });
 
     pending
+}
+
+/// Paints a wavy underline beneath each diagnostic's range.
+///
+/// Painted rather than set as `TextFormat::underline`, which egui only draws
+/// straight — the prototype asks for `underline wavy`, and a straight line under
+/// code reads as a hyperlink. The geometry comes from the galley, the same
+/// source `line_numbers` uses for the gutter.
+fn paint_squiggles(
+    ui: &egui::Ui,
+    galley: &egui::Galley,
+    galley_pos: egui::Pos2,
+    squiggles: &[(Range<usize>, egui::Color32)],
+) {
+    /// Horizontal distance between successive peaks.
+    const PERIOD: f32 = 4.0;
+    /// How far the wave rises and falls.
+    const AMPLITUDE: f32 = 1.5;
+    /// Gap between the text's bottom and the wave.
+    const OFFSET: f32 = 1.0;
+
+    let painter = ui.painter();
+    for (range, color) in squiggles {
+        if range.start >= range.end {
+            continue;
+        }
+
+        let start = galley.pos_from_cursor(CCursor::new(range.start));
+        let end = galley.pos_from_cursor(CCursor::new(range.end));
+        // A range that wraps onto another row would need one wave per row; the
+        // code area does not wrap (see `syntax`), so a differing top means the
+        // range spans a newline and only the first row is marked.
+        let right = if (end.top() - start.top()).abs() < 0.5 {
+            end.left()
+        } else {
+            galley.rect.right()
+        };
+
+        let y = galley_pos.y + start.bottom() + OFFSET;
+        let left = galley_pos.x + start.left();
+        let right = galley_pos.x + right;
+        if right <= left {
+            continue;
+        }
+
+        let mut points = Vec::with_capacity(((right - left) / PERIOD).ceil() as usize + 2);
+        let mut x = left;
+        let mut up = true;
+        while x < right {
+            points.push(egui::pos2(x, if up { y } else { y + AMPLITUDE }));
+            x += PERIOD / 2.0;
+            up = !up;
+        }
+        points.push(egui::pos2(right, if up { y } else { y + AMPLITUDE }));
+
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, *color)));
+    }
 }
 
 /// Right-click menu for the code area. Returns the command the user picked.
@@ -527,6 +602,7 @@ fn run_command(
         EditorCommand::SelectAll => Some(CommandOutcome {
             selection: 0..text.chars().count(),
             scroll: false,
+            changed: false,
         }),
 
         EditorCommand::Copy => {
@@ -560,12 +636,14 @@ fn run_command(
         EditorCommand::SelectLine => Some(CommandOutcome {
             selection: editing::select_line(text, selection),
             scroll: false,
+            changed: false,
         }),
 
         EditorCommand::SelectNextOccurrence => {
             occurrence_after(text, selection).map(|selection| CommandOutcome {
                 selection,
                 scroll: true,
+                changed: false,
             })
         }
 
@@ -619,6 +697,7 @@ fn step_history(
     Some(CommandOutcome {
         selection: primary.min(secondary)..primary.max(secondary),
         scroll: false,
+        changed: true,
     })
 }
 
@@ -657,6 +736,7 @@ fn commit(
     CommandOutcome {
         selection: edit.cursor_after,
         scroll: false,
+        changed: true,
     }
 }
 
