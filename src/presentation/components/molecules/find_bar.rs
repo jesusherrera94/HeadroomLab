@@ -2,6 +2,9 @@
 //! stepping. Matches are shown by selecting them in the code editor rather than
 //! by tinting the layout job — the selection highlight egui already draws is the
 //! same affordance, and it keeps the syntax layouter untouched.
+//!
+//! The search itself is `domain::editing::find_matches` — this module is only
+//! the widget.
 
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular as ph;
@@ -109,62 +112,4 @@ pub fn find_bar(ui: &mut egui::Ui, state: &mut FindState, match_count: usize) ->
     }
 
     events
-}
-
-/// Character ranges of every case-insensitive occurrence of `query` in `text`.
-///
-/// Ranges are in **characters**, not bytes, because that is what egui's cursors
-/// use. Returns nothing for an empty query.
-pub fn find_matches(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let haystack = text.to_lowercase();
-    let needle = query.to_lowercase();
-
-    // Byte offset → char offset, so the ranges line up with the cursor model.
-    let mut char_of_byte = vec![0usize; haystack.len() + 1];
-    for (chars, (byte, _)) in haystack.char_indices().enumerate() {
-        char_of_byte[byte] = chars;
-    }
-    char_of_byte[haystack.len()] = haystack.chars().count();
-
-    let query_chars = needle.chars().count();
-    let mut matches = Vec::new();
-    let mut from = 0;
-    while let Some(found) = haystack[from..].find(&needle) {
-        let byte = from + found;
-        let start = char_of_byte[byte];
-        matches.push(start..start + query_chars);
-        from = byte + needle.len().max(1);
-    }
-    matches
-}
-
-#[cfg(test)]
-mod tests {
-    use super::find_matches;
-
-    #[test]
-    fn finds_every_occurrence_case_insensitively() {
-        let text = "float Gain; float gain;";
-        assert_eq!(find_matches(text, "gain"), vec![6..10, 18..22]);
-    }
-
-    #[test]
-    fn empty_query_matches_nothing() {
-        assert!(find_matches("anything", "").is_empty());
-    }
-
-    #[test]
-    fn ranges_are_character_offsets_not_byte_offsets() {
-        // "é" is two bytes; the match after it must still report char offsets.
-        let text = "é gain";
-        assert_eq!(find_matches(text, "gain"), vec![2..6]);
-    }
-
-    #[test]
-    fn overlapping_scan_does_not_loop_forever() {
-        assert_eq!(find_matches("aaaa", "aa"), vec![0..2, 2..4]);
-    }
 }

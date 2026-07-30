@@ -50,6 +50,11 @@ pub const TAB_ACTIVE_BACKGROUND: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x1f);
 /// the user learns the mark once.
 pub const UNSAVED_DOT: Color32 = Color32::from_rgb(0xe2, 0xc0, 0x8d);
 
+/// Background behind the find bar's current match. Amber rather than the blue
+/// `ACCENT` so it reads as distinct from a real text selection, and dark enough
+/// that syntax-coloured text stays legible on top of it.
+pub const FIND_MATCH: Color32 = Color32::from_rgb(0x6b, 0x51, 0x1c);
+
 // -- Typography tokens (px, matching the previous UI markup) ------------------------
 
 pub const FONT_SMALL: f32 = 11.0;

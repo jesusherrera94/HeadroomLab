@@ -18,10 +18,13 @@ use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 
 use crate::application::file_system_service::FileSystemService;
 use crate::application::graph_service::GraphService;
-use crate::application::ports::{FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort};
+use crate::application::ports::{
+    ClipboardPort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort,
+};
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
 use crate::domain::project::{RecentProject, sanitize_target};
+use crate::presentation::components::organisms::code_pane;
 use crate::presentation::editor_controller::{self, EditorState};
 use crate::presentation::initial_controller::{self, InitialState, ProjectIntent};
 use crate::presentation::simulation_controller;
@@ -50,6 +53,7 @@ pub struct HeadroomApp {
     file_system: Rc<dyn ProjectFileSystemPort>,
     fs_service: Rc<FileSystemService>,
     file_watcher: Rc<dyn FileWatcherPort>,
+    clipboard: Rc<dyn ClipboardPort>,
     windows: WindowManager,
 
     screen: Screen,
@@ -60,6 +64,10 @@ pub struct HeadroomApp {
 }
 
 impl HeadroomApp {
+    // The composition root's constructor: one parameter per port `main.rs`
+    // chooses an implementation for. Grouping them into a struct would only move
+    // the same list somewhere else.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sim_service: Rc<SimulatorService>,
         graph_service: Rc<GraphService>,
@@ -68,6 +76,7 @@ impl HeadroomApp {
         file_system: Rc<dyn ProjectFileSystemPort>,
         fs_service: Rc<FileSystemService>,
         file_watcher: Rc<dyn FileWatcherPort>,
+        clipboard: Rc<dyn ClipboardPort>,
     ) -> Self {
         Self {
             sim_service,
@@ -77,6 +86,7 @@ impl HeadroomApp {
             file_system,
             fs_service,
             file_watcher,
+            clipboard,
             windows: WindowManager::default(),
             screen: Screen::Splash,
             splash_started: Instant::now(),
@@ -162,6 +172,7 @@ impl HeadroomApp {
             self.file_system.clone(),
             self.fs_service.clone(),
             self.file_watcher.clone(),
+            self.clipboard.clone(),
         ));
         self.current_project = Some(project);
         self.screen = Screen::Editor;
@@ -196,6 +207,13 @@ impl HeadroomApp {
                 let events = editor_window::show(ui, state);
                 requests = editor_controller::handle_events(state, events);
                 close_requested = ui.ctx().input(|i| i.viewport().close_requested());
+
+                // Tabs that went away this frame — closed, or pruned by the
+                // watcher — release their cursor, scroll and undo history here.
+                // The controller stays egui-free; only the view touches memory.
+                for tab in editor_controller::take_discarded_tabs(state) {
+                    code_pane::forget_editor_state(ui.ctx(), tab);
+                }
 
                 // Closing the Editor quits the whole app, so unsaved buffers get
                 // one chance to be rescued: cancel the OS close and raise the

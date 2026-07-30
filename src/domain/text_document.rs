@@ -143,6 +143,18 @@ pub fn language_label(lang: Language) -> &'static str {
     }
 }
 
+/// The marker that comments out a single line, for `⌘/`. `None` means the
+/// language has no line comment, and the toggle is a no-op there — JSON has no
+/// comments at all, and Markdown's `<!-- -->` is a block form this editor does
+/// not attempt.
+pub fn line_comment(lang: Language) -> Option<&'static str> {
+    match lang {
+        Language::Cpp | Language::C | Language::Header => Some("//"),
+        Language::Make => Some("#"),
+        Language::Markdown | Language::Json | Language::PlainText => None,
+    }
+}
+
 /// The token syntect resolves a grammar from (`find_syntax_by_token`). Headers
 /// use the C++ grammar; plain text has no grammar and falls back at the call
 /// site.

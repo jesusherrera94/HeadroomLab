@@ -25,7 +25,7 @@ use std::time::SystemTime;
 
 use crate::application::file_system_service::FileSystemService;
 use crate::application::ports::{
-    DirEntryInfo, FileWatchSession, FileWatcherPort, ProjectFileSystemPort,
+    ClipboardPort, DirEntryInfo, FileWatchSession, FileWatcherPort, ProjectFileSystemPort,
 };
 use crate::domain::file_system::FileSystemError;
 use crate::domain::project::RecentProject;
@@ -320,6 +320,10 @@ pub struct EditorTab {
     /// Set when the file changed on disk under a dirty buffer, so we kept the
     /// user's text instead of reloading over it.
     pub external_change: bool,
+    /// Set when the buffer was replaced from disk, so the next paint drops the
+    /// undo history with it. Without this, `⌘Z` would rewind past the reload and
+    /// restore text for a file that has since moved underneath.
+    pub history_reset: bool,
     /// Live find state, present only while the find bar is open.
     pub find: Option<FindState>,
 }
@@ -355,6 +359,7 @@ impl EditorTab {
             content,
             disk_modified,
             external_change: false,
+            history_reset: false,
             find: None,
         }
     }
@@ -495,6 +500,9 @@ pub struct EditorState {
     pub project_path: PathBuf,
     pub fs: Rc<dyn ProjectFileSystemPort>,
     pub fs_service: Rc<FileSystemService>,
+    /// Read side of the system clipboard, for the code editor's Paste menu item.
+    /// Writes go through egui's own `Context::copy_text`.
+    pub clipboard: Rc<dyn ClipboardPort>,
     pub watch: Option<Box<dyn FileWatchSession>>,
     pub tree: FileTreeState,
     pub explorer: ExplorerUiState,
@@ -504,6 +512,11 @@ pub struct EditorState {
     /// id can only ever fail to resolve — it can never resolve to a *different*
     /// buffer than the one it was taken for.
     next_tab_id: u64,
+    /// Tabs that went away this frame, however they went (closed, or pruned by
+    /// the watcher). The view drains this to drop each one's `TextEditState`
+    /// from egui's memory map, which has no GC of its own — without it every
+    /// closed tab leaks its buffer snapshot for the life of the process.
+    discarded_tabs: Vec<TabId>,
     /// Set when the active tab changed from outside the strip (opening a file, a
     /// reorder), so the next paint scrolls it back into view.
     pub scroll_active_into_view: bool,
@@ -521,6 +534,7 @@ impl EditorState {
         fs: Rc<dyn ProjectFileSystemPort>,
         fs_service: Rc<FileSystemService>,
         watcher: Rc<dyn FileWatcherPort>,
+        clipboard: Rc<dyn ClipboardPort>,
     ) -> Self {
         let tree = FileTreeState::new(project, fs.as_ref());
 
@@ -542,12 +556,14 @@ impl EditorState {
             project_path: project.path.clone(),
             fs,
             fs_service,
+            clipboard,
             watch,
             tree,
             explorer: ExplorerUiState::default(),
             tabs: Vec::new(),
             active_tab: 0,
             next_tab_id: 0,
+            discarded_tabs: Vec::new(),
             scroll_active_into_view: false,
             cursor: None,
             terminal_lines,
@@ -566,6 +582,12 @@ impl EditorState {
     fn index_of(&self, id: TabId) -> Option<usize> {
         self.tabs.iter().position(|t| t.id == id)
     }
+}
+
+/// Takes the tabs that went away since the last call, so the view can drop each
+/// one's editor state. Drained rather than read, so an id is acted on once.
+pub fn take_discarded_tabs(state: &mut EditorState) -> Vec<TabId> {
+    std::mem::take(&mut state.discarded_tabs)
 }
 
 /// The paths of every open buffer with unsaved changes — what the Explorer needs
@@ -713,6 +735,7 @@ fn sync_open_buffers(state: &mut EditorState, changed: &[PathBuf]) {
             tab.content = opened.content;
             tab.disk_modified = opened.modified;
             tab.external_change = false;
+            tab.history_reset = true;
         }
     }
 }
@@ -843,6 +866,7 @@ fn reload_active(state: &mut EditorState) {
             tab.content = opened.content;
             tab.disk_modified = opened.modified;
             tab.external_change = false;
+            tab.history_reset = true;
         }
         Err(e) => state.explorer.error = Some(e.to_string()),
     }
@@ -1136,7 +1160,8 @@ fn close_tab(state: &mut EditorState, index: usize) {
     if index >= state.tabs.len() {
         return;
     }
-    state.tabs.remove(index);
+    let gone = state.tabs.remove(index);
+    state.discarded_tabs.push(gone.id);
     if state.active_tab > index {
         state.active_tab -= 1;
     }
@@ -1177,9 +1202,13 @@ fn prune_missing(state: &mut EditorState) {
     {
         state.tree.selected = None;
     }
-    state
-        .tabs
-        .retain(|t| t.unsaved() || state.fs.exists(&t.path));
+    state.tabs.retain(|t| {
+        let keep = t.unsaved() || state.fs.exists(&t.path);
+        if !keep {
+            state.discarded_tabs.push(t.id);
+        }
+        keep
+    });
     if state.active_tab >= state.tabs.len() {
         state.active_tab = state.tabs.len().saturating_sub(1);
     }
@@ -1249,6 +1278,17 @@ mod tests {
         assert_eq!(icon_for_file("notes.md"), NodeIcon::Markdown);
         assert_eq!(icon_for_file("mystery.xyz"), NodeIcon::Generic);
         assert_eq!(icon_for_file("README"), NodeIcon::Generic);
+    }
+
+    /// Always-empty clipboard. Nothing in this module reads it — Paste lives in
+    /// the code editor's context menu — but `EditorState` carries the port, so
+    /// the tests need something to hold.
+    struct FakeClipboard;
+
+    impl ClipboardPort for FakeClipboard {
+        fn read(&self) -> Option<String> {
+            None
+        }
     }
 
     /// Fake filesystem returning a fixed listing per directory, plus an in-memory
@@ -1405,6 +1445,7 @@ mod tests {
             project_path: root.clone(),
             fs: fs.clone(),
             fs_service,
+            clipboard: Rc::new(FakeClipboard),
             watch: None,
             tree: FileTreeState {
                 root: TreeNode {
@@ -1421,6 +1462,7 @@ mod tests {
             tabs: Vec::new(),
             active_tab: 0,
             next_tab_id: 0,
+            discarded_tabs: Vec::new(),
             scroll_active_into_view: false,
             cursor: None,
             terminal_lines: Vec::new(),
@@ -1520,6 +1562,10 @@ mod tests {
 
         assert_eq!(state.tabs[0].content.text(), Some("two\n"));
         assert!(!state.tabs[0].external_change);
+        assert!(
+            state.tabs[0].history_reset,
+            "a replaced buffer must drop its undo history, or ⌘Z rewinds past the reload"
+        );
 
         assert_eq!(
             state.tabs[1].content.text(),
@@ -1527,6 +1573,37 @@ mod tests {
             "a dirty buffer must never be overwritten by the watcher"
         );
         assert!(state.tabs[1].external_change);
+        assert!(
+            !state.tabs[1].history_reset,
+            "nothing was replaced, so this buffer keeps its history"
+        );
+    }
+
+    #[test]
+    fn a_tab_that_goes_away_hands_back_its_id_so_its_editor_state_can_be_dropped() {
+        let path = PathBuf::from("/proj/main.cpp");
+        let fs = Rc::new(FakeFs::with_file(&path, b"one\n"));
+        let mut state = state_over(fs.clone());
+
+        open_tab(&mut state, &path);
+        let closed = tab_id(&state, 0);
+        request_close_tab(&mut state, closed);
+
+        assert_eq!(take_discarded_tabs(&mut state), vec![closed]);
+        assert!(
+            take_discarded_tabs(&mut state).is_empty(),
+            "draining twice must not act on the same id twice"
+        );
+
+        // A tab the watcher prunes counts too — it is just as gone.
+        open_tab(&mut state, &path);
+        let pruned = tab_id(&state, 0);
+        assert_ne!(pruned, closed, "ids are never reused");
+        fs.files.borrow_mut().remove(&path);
+        prune_missing(&mut state);
+
+        assert!(state.tabs.is_empty());
+        assert_eq!(take_discarded_tabs(&mut state), vec![pruned]);
     }
 
     #[test]
