@@ -63,6 +63,7 @@ pub fn code_pane(
 
     // Resolve find hits before borrowing the text mutably for the editor.
     let mut select = None;
+    let mut match_range = None;
     if let (Some(find), Some(text)) = (tab.find.as_mut(), tab.content.text()) {
         let matches = find_matches(text, &find.query);
         let bar = find_bar(ui, find, matches.len());
@@ -77,9 +78,14 @@ pub fn code_pane(
             } else if bar.previous {
                 find.current = (find.current + matches.len() - 1) % matches.len();
             }
-            // Re-select on any navigation, and whenever the query changes.
+            // Tinted every frame the bar is open, so the hit stays visible while
+            // the user keeps typing — the selection alone would not be, since
+            // egui paints one only for the focused widget and the focus is in
+            // the query field.
+            match_range = matches.get(find.current).cloned();
+            // Scrolled into view only when the hit actually changed.
             if bar.changed || bar.next || bar.previous {
-                select = matches.get(find.current).cloned();
+                select = match_range.clone();
             }
         }
         ui.add_space(4.0);
@@ -109,6 +115,7 @@ pub fn code_pane(
                     highlighted: *highlight,
                     id,
                     select,
+                    match_range,
                     clipboard,
                 },
             );

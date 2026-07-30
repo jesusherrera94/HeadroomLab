@@ -42,6 +42,11 @@ pub struct CodeEditorRequest<'a> {
     pub id: egui::Id,
     /// A character range to select and scroll into view this frame (find hits).
     pub select: Option<Range<usize>>,
+    /// The find bar's current match, tinted in the layout for as long as the bar
+    /// is open. Separate from `select` because egui only paints a selection
+    /// while the widget has focus, and during a find the focus is in the query
+    /// field.
+    pub match_range: Option<Range<usize>>,
     /// Read side of the system clipboard, for the context menu's Paste. The
     /// keyboard `⌘V` never comes through here — egui gets that as an OS event.
     pub clipboard: &'a dyn ClipboardPort,
@@ -54,6 +59,7 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
         highlighted,
         id,
         select,
+        match_range,
         clipboard,
     } = request;
 
@@ -76,7 +82,13 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                     ui.allocate_exact_size(egui::vec2(gutter, 0.0), egui::Sense::hover());
 
                 let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, _wrap: f32| {
-                    syntax::layouter(ui, buffer.as_str(), language, highlighted)
+                    syntax::layouter(
+                        ui,
+                        buffer.as_str(),
+                        language,
+                        highlighted,
+                        match_range.as_ref(),
+                    )
                 };
 
                 let mut output = egui::TextEdit::multiline(text)
@@ -114,10 +126,16 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                 // Run it here, where the `TextEdit`'s borrow of `text` is over.
                 // Menu items raise the same `EditorCommand`s the key chords do,
                 // so the two paths cannot drift apart in behaviour.
-                let menu_outcome = chosen
-                    .and_then(|command| run_command(ui, id, text, language, clipboard, command));
-                if menu_outcome.is_some() {
-                    result.changed = true;
+                let mut menu_outcome = None;
+                if let Some(command) = chosen {
+                    // Opening the menu took focus off the editor, and egui paints
+                    // a `TextEdit`'s selection *only while it is focused*
+                    // (`text_edit/builder.rs:833`). Without handing focus back, a
+                    // command like Select Line would set a selection that is
+                    // never drawn — it looks like the item did nothing.
+                    ui.memory_mut(|memory| memory.request_focus(id));
+                    menu_outcome = run_command(ui, id, text, language, clipboard, command);
+                    result.changed |= menu_outcome.is_some();
                 }
 
                 // Auto-closed a pair: step back between the two characters.
@@ -499,7 +517,11 @@ fn run_command(
     clipboard: &dyn ClipboardPort,
     command: EditorCommand,
 ) -> Option<CommandOutcome> {
-    let selection = selection_of(ui, id, text)?;
+    // A buffer that has never been clicked into has no stored cursor at all.
+    // Treat that as a caret at the top rather than dropping the command: the
+    // menu can be opened without ever having focused the editor, and silently
+    // doing nothing is exactly the bug that reads as "the menu is broken".
+    let selection = selection_of(ui, id, text).unwrap_or(0..0);
 
     match command {
         EditorCommand::SelectAll => Some(CommandOutcome {
