@@ -5,7 +5,8 @@
 //! right-click context menu. All mutations are emitted as `ExplorerEvents` for
 //! the controller to apply through the `FileSystemService`.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, RichText, collapsing_header::CollapsingState};
 use egui_phosphor::regular as ph;
@@ -14,16 +15,21 @@ use crate::presentation::components::atoms::file_icon::file_icon;
 use crate::presentation::components::molecules::explorer_row::explorer_row;
 use crate::presentation::editor_controller::{
     self, EntryKind, ExplorerEvents, ExplorerUiState, FileTreeState, TreeNode, entry_kind_icon,
+    reveal_label,
 };
 use crate::presentation::theme;
 
 /// Caret slot width, matched to `explorer_row` so inline editors line up.
 const CARET_WIDTH: f32 = 14.0;
 
+/// `unsaved` holds the paths of open buffers with unsaved changes, so their rows
+/// can show the ●. It is a set of paths rather than the tab list because the
+/// explorer has no business knowing what a tab is.
 pub fn file_explorer(
     ui: &mut egui::Ui,
     tree: &FileTreeState,
     ui_state: &mut ExplorerUiState,
+    unsaved: &HashSet<PathBuf>,
 ) -> ExplorerEvents {
     let mut events = ExplorerEvents::default();
 
@@ -59,6 +65,7 @@ pub fn file_explorer(
                 &tree.root,
                 true,
                 selected.as_deref(),
+                unsaved,
                 ui_state,
                 &mut events,
             );
@@ -89,6 +96,7 @@ fn render_node(
     node: &TreeNode,
     default_open: bool,
     selected: Option<&Path>,
+    unsaved: &HashSet<PathBuf>,
     ui_state: &mut ExplorerUiState,
     events: &mut ExplorerEvents,
 ) {
@@ -103,7 +111,7 @@ fn render_node(
         if renaming {
             inline_rename_row(ui, node, None, ui_state, events);
         } else {
-            let row = explorer_row(ui, node, None, is_selected);
+            let row = explorer_row(ui, node, None, is_selected, unsaved.contains(&node.path));
             if row.double_clicked() {
                 events.begin_rename = Some(node.path.clone());
             } else if row.clicked() {
@@ -129,7 +137,9 @@ fn render_node(
     let header = if renaming {
         inline_rename_row(ui, node, Some(state.is_open()), ui_state, events)
     } else {
-        let row = explorer_row(ui, node, Some(state.is_open()), is_selected);
+        // Directories never carry the ● — a dirty file's own row shows it, and
+        // bubbling it up the tree was explicitly rejected (HL13 D3).
+        let row = explorer_row(ui, node, Some(state.is_open()), is_selected, false);
         if row.double_clicked() {
             events.begin_rename = Some(node.path.clone());
         } else if row.clicked() {
@@ -149,7 +159,7 @@ fn render_node(
             inline_create_row(ui, ui_state, events);
         }
         for child in &node.children {
-            render_node(ui, child, false, selected, ui_state, events);
+            render_node(ui, child, false, selected, unsaved, ui_state, events);
         }
     });
 }
@@ -279,14 +289,4 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, tooltip: &str) -> egui::Response 
         .frame(false),
     )
     .on_hover_text(tooltip)
-}
-
-fn reveal_label() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Reveal in Finder"
-    } else if cfg!(target_os = "windows") {
-        "Show in Explorer"
-    } else {
-        "Show in Files"
-    }
 }

@@ -13,15 +13,21 @@ use crate::presentation::theme;
 /// Width reserved for the collapse caret so folder and file icons align.
 const CARET_WIDTH: f32 = 14.0;
 const CARET_SIZE: f32 = 12.0;
+/// Radius of the unsaved ●, matching the tab strip's.
+const DOT_RADIUS: f32 = 3.5;
+/// Gap between the dot and the row's right edge.
+const DOT_MARGIN: f32 = 10.0;
 
 /// Renders `node` as a row. `open` is `Some(is_open)` for directories (drives
-/// the caret and folder-open icon) and `None` for files. Returns the row's
-/// click response.
+/// the caret and folder-open icon) and `None` for files. `unsaved` adds the
+/// right-aligned ● marking an open buffer with unsaved changes. Returns the
+/// row's click response.
 pub fn explorer_row(
     ui: &mut egui::Ui,
     node: &TreeNode,
     open: Option<bool>,
     selected: bool,
+    unsaved: bool,
 ) -> egui::Response {
     // Reserve a shape slot for the highlight painted behind the row.
     let bg = ui.painter().add(egui::Shape::Noop);
@@ -45,6 +51,9 @@ pub fn explorer_row(
                     .font(theme::body_font())
                     .color(color),
             );
+            if unsaved {
+                unsaved_dot(ui);
+            }
         });
     });
 
@@ -70,6 +79,22 @@ pub fn explorer_row(
     }
 
     response
+}
+
+/// The ● marking an open buffer with unsaved changes, pushed to the row's right
+/// edge (the prototype's `margin-left:auto`). Purely informational here — saving
+/// happens from the tab strip, the status bar or Cmd/Ctrl+S.
+fn unsaved_dot(ui: &mut egui::Ui) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(DOT_MARGIN);
+        let (rect, dot) = ui.allocate_exact_size(
+            egui::vec2(DOT_RADIUS * 2.0, DOT_RADIUS * 2.0),
+            Sense::hover(),
+        );
+        ui.painter()
+            .circle_filled(rect.center(), DOT_RADIUS, theme::UNSAVED_DOT);
+        dot.on_hover_text("Unsaved changes");
+    });
 }
 
 /// Paints the collapse caret in a fixed-width slot (blank for files).

@@ -8,14 +8,14 @@ use eframe::egui;
 use crate::presentation::components::molecules::confirm_modal::{
     ConfirmModalContent, confirm_modal,
 };
-use crate::presentation::components::molecules::editor_tab::editor_tab;
+use crate::presentation::components::molecules::editor_tab::{EditorTabRequest, editor_tab};
 use crate::presentation::components::molecules::error_dialog::error_dialog;
 use crate::presentation::components::organisms::code_pane::code_pane;
 use crate::presentation::components::organisms::editor_toolbar::editor_toolbar;
 use crate::presentation::components::organisms::file_explorer::file_explorer;
 use crate::presentation::components::organisms::status_bar::{StatusInfo, status_bar};
 use crate::presentation::components::organisms::terminal_panel::terminal_panel;
-use crate::presentation::editor_controller::{EditorState, EditorViewEvents};
+use crate::presentation::editor_controller::{self, EditorState, EditorViewEvents};
 
 /// Cmd+S / Ctrl+S — save the active buffer.
 const SAVE: egui::KeyboardShortcut =
@@ -52,7 +52,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
     // it reports the cursor from the previous frame — one frame of lag on a
     // position readout is imperceptible and avoids a second layout pass.
     egui::Panel::bottom("status_bar").show(ui, |ui| {
-        status_bar(
+        let bar = status_bar(
             ui,
             StatusInfo {
                 project_name: &state.project_name,
@@ -60,7 +60,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
                 cursor: state.cursor,
             },
         );
+        events.code.save |= bar.save;
     });
+
+    // Which open buffers are dirty, for the explorer's ● markers. Computed once
+    // here so the panel closure doesn't have to borrow the tab list.
+    let unsaved = editor_controller::unsaved_paths(state);
 
     // Explorer (full-height, left, between toolbar and status bar). Handles
     // open/select, inline create/rename, delete requests and reveals.
@@ -68,7 +73,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         .resizable(true)
         .default_size(220.0)
         .show(ui, |ui| {
-            events.explorer = file_explorer(ui, &state.tree, &mut state.explorer);
+            events.explorer = file_explorer(ui, &state.tree, &mut state.explorer, &unsaved);
         });
 
     // Terminal (bottom, above the status bar, right of the explorer).
@@ -80,18 +85,57 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
         });
 
     // Editor: tab strip on top, code area filling the rest.
+    let any_unsaved = !unsaved.is_empty();
+    // Consumed here so a single request scrolls once, not on every later frame.
+    let scroll_active = std::mem::take(&mut state.scroll_active_into_view);
+
     egui::CentralPanel::default().show(ui, |ui| {
         egui::Panel::top("tabs").show(ui, |ui| {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // A drop is reported by whichever tab the pointer was over,
+                    // which also tells us the landing slot.
+                    let mut dropped: Option<(_, usize)> = None;
+
                     for (index, tab) in state.tabs.iter().enumerate() {
-                        let tab = editor_tab(ui, tab, index == state.active_tab);
-                        if tab.close_clicked {
-                            events.tab_closed = Some(index);
-                        } else if tab.clicked {
+                        let response = editor_tab(
+                            ui,
+                            EditorTabRequest {
+                                tab,
+                                index,
+                                active: index == state.active_tab,
+                                any_unsaved,
+                                scroll_to: scroll_active && index == state.active_tab,
+                            },
+                        );
+
+                        if let (Some(dragged), Some(slot)) =
+                            (response.dropped, response.drop_before)
+                        {
+                            dropped = Some((dragged, slot));
+                        }
+                        if response.close_clicked {
+                            events.tab_closed = Some(tab.id);
+                        } else if response.clicked {
                             events.tab_clicked = Some(index);
                         }
+                        if response.save_clicked {
+                            events.tab_saved = Some(tab.id);
+                        }
+                        if response.save_all_clicked {
+                            events.code.save_all = true;
+                        }
+                        if response.reveal_clicked {
+                            events.tab_reveal = Some(tab.path.clone());
+                        }
+                        // Clipboard access is egui's, so it is served here rather
+                        // than round-tripped through the egui-free controller.
+                        if response.copy_path_clicked {
+                            ui.ctx().copy_text(tab.path.to_string_lossy().into_owned());
+                        }
                     }
+
+                    events.tab_reordered = dropped;
                 });
             });
         });
