@@ -147,21 +147,7 @@ fn tab_label(session: &crate::presentation::terminal_controller::Session) -> Str
 /// The grid, or whatever stands in for it: an empty panel, a spawn failure, or a
 /// child that has exited.
 fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalRequests) {
-    // The grid is sized from the panel, so the first session is opened here
-    // rather than at construction — it starts at the real size and never has to
-    // reflow on its first frame.
     let (cell_width, cell_height) = cell_metrics(ui);
-    let available = ui.available_size();
-    let (cols, rows) = grid_size(available.x, available.y, cell_width, cell_height);
-    terminal_controller::resize(
-        state,
-        TerminalSize {
-            cols,
-            rows,
-            cell_width: cell_width.round() as u16,
-            cell_height: cell_height.round() as u16,
-        },
-    );
     terminal_controller::ensure_open(state);
 
     // Windows without git-bash: builds cannot run, but the PowerShell session
@@ -224,6 +210,21 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
         }
     }
 
+    // Sized *after* the strips above have taken their space. Measuring first
+    // would tell the PTY it has more rows than are actually left, and the extra
+    // ones would be painted past the bottom of the panel and clipped away.
+    let available = ui.available_size();
+    let (cols, rows) = grid_size(available.x, available.y, cell_width, cell_height);
+    terminal_controller::resize(
+        state,
+        TerminalSize {
+            cols,
+            rows,
+            cell_width: cell_width.round() as u16,
+            cell_height: cell_height.round() as u16,
+        },
+    );
+
     let Some(snapshot) = terminal_controller::active_snapshot(state) else {
         return;
     };
@@ -285,7 +286,7 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
         handle_keys(ui, state, requests);
     }
 
-    handle_scroll(ui, state, &response);
+    handle_scroll(ui, state, &response, cell_height);
 }
 
 /// One compact row reporting that the child has exited, with a Restart button.
@@ -559,20 +560,34 @@ fn handle_mouse(
 /// Wheel scrolling moves the grid's own viewport into the scrollback rather than
 /// an egui `ScrollArea` — the grid owns `display_offset`, and two scroll models
 /// over one buffer would fight.
-fn handle_scroll(ui: &egui::Ui, state: &TerminalState, response: &egui::Response) {
+///
+/// Pixels are **accumulated** across frames before being converted to whole
+/// lines. Rounding each frame's delta on its own throws away everything smaller
+/// than half a line, which is most of what a trackpad produces — the effect is a
+/// terminal that simply refuses to scroll, and a long build log whose actual
+/// error can never be brought back into view.
+fn handle_scroll(
+    ui: &egui::Ui,
+    state: &mut TerminalState,
+    response: &egui::Response,
+    cell_height: f32,
+) {
     if !response.hovered() {
         return;
     }
-    let delta = ui.input(|input| input.smooth_scroll_delta.y);
-    if delta.abs() < 1.0 {
+
+    state.scroll_carry += ui.input(|input| input.smooth_scroll_delta.y);
+
+    // Positive scrolls back into history, which is what alacritty's
+    // `Scroll::Delta` means too (`grid/mod.rs:165`).
+    let lines = (state.scroll_carry / cell_height).trunc();
+    if lines == 0.0 {
         return;
     }
-    let (_, cell_height) = cell_metrics(ui);
-    let lines = (delta / cell_height).round() as i32;
-    if lines != 0
-        && let Some(inner) = state.active_session().and_then(|s| s.inner.as_ref())
-    {
-        inner.scroll(lines);
+    state.scroll_carry -= lines * cell_height;
+
+    if let Some(inner) = state.active_session().and_then(|s| s.inner.as_ref()) {
+        inner.scroll(lines as i32);
     }
 }
 

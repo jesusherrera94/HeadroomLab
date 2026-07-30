@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use crate::application::ports::{ClipboardPort, TerminalEvent, TerminalPort, TerminalSession};
 use crate::domain::terminal::{
-    BuildKind, BuildStatus, BuildUnavailable, GIT_FOR_WINDOWS_URL, Platform, ShellChoice,
-    TerminalPalette, TerminalSize, TerminalSnapshot, build_command, shell_for,
+    BuildKind, BuildStatus, BuildUnavailable, GIT_FOR_WINDOWS_URL, Platform, SCROLLBACK_LINES,
+    ShellChoice, TerminalPalette, TerminalSize, TerminalSnapshot, build_command, shell_for,
 };
 
 /// Identity for a session, so an action raised in one frame still refers to the
@@ -73,6 +73,9 @@ pub struct TerminalRequests {
     pub copy: Option<String>,
     /// A build finished badly; the message belongs in the editor's error banner.
     pub error: Option<String>,
+    /// A `make dylib` succeeded, so the simulator should open on the library it
+    /// just produced — this is what makes the button's name honest.
+    pub launch_simulator: bool,
 }
 
 pub struct TerminalState {
@@ -91,6 +94,9 @@ pub struct TerminalState {
     pub missing_git_bash: bool,
     /// Whether the automatic first session has been opened yet.
     opened_once: bool,
+    /// Sub-line scroll pixels carried between frames, so a trackpad's many
+    /// small deltas add up to a line instead of each rounding away to nothing.
+    pub scroll_carry: f32,
 }
 
 impl TerminalState {
@@ -118,6 +124,7 @@ impl TerminalState {
             },
             missing_git_bash: false,
             opened_once: false,
+            scroll_carry: 0.0,
         }
     }
 
@@ -270,6 +277,10 @@ pub fn write_active(state: &TerminalState, bytes: &[u8]) {
         && session.is_live()
         && let Some(inner) = &session.inner
     {
+        // Typing snaps the view back to the prompt, as every terminal does —
+        // otherwise input would land somewhere the user cannot see. Clamped to
+        // the bottom by alacritty, so an oversized step is safe.
+        inner.scroll(-(SCROLLBACK_LINES as i32));
         inner.write(bytes);
     }
 }
@@ -399,11 +410,20 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
                             None => BuildStatus::Failed(-1),
                         };
                         session.status = Some(status);
-                        if let BuildStatus::Failed(code) = status {
-                            requests.error = Some(format!(
-                                "{} failed with status {code}. See the Build tab for the output.",
-                                kind.label()
-                            ));
+                        match status {
+                            // A successful `make dylib` produced the library the
+                            // simulator loads, so Build & Run can now do the
+                            // "run" half of its name.
+                            BuildStatus::Succeeded if kind == BuildKind::Dylib => {
+                                requests.launch_simulator = true;
+                            }
+                            BuildStatus::Failed(code) => {
+                                requests.error = Some(format!(
+                                    "{} failed with status {code}. See the Build tab for the output.",
+                                    kind.label()
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -736,6 +756,83 @@ mod tests {
 
         assert!(!*port.opened.borrow()[0].cleared.borrow());
         assert!(*port.opened.borrow()[1].cleared.borrow());
+    }
+
+    /// Drives a build to completion with `code`, returning what `tick` asked for.
+    fn build_finishing_with(kind: BuildKind, code: i32) -> (TerminalRequests, TerminalState) {
+        let port = Rc::new(FakePort::default());
+        let mut state = state_over(port.clone(), None);
+        run_build(&mut state, kind);
+
+        let build = port.opened.borrow().last().cloned().expect("build spawned");
+        build
+            .events
+            .borrow_mut()
+            .push(TerminalEvent::ChildExit(Some(code)));
+        let requests = tick(&mut state);
+        (requests, state)
+    }
+
+    #[test]
+    fn a_successful_dylib_build_asks_for_the_simulator() {
+        // "Build & Run" only earns the second half of its name if it runs.
+        let (requests, state) = build_finishing_with(BuildKind::Dylib, 0);
+        assert!(requests.launch_simulator);
+        assert!(requests.error.is_none());
+        assert_eq!(
+            state.build_status(),
+            Some((BuildKind::Dylib, BuildStatus::Succeeded))
+        );
+    }
+
+    #[test]
+    fn a_failed_build_reports_instead_of_launching() {
+        let (requests, state) = build_finishing_with(BuildKind::Dylib, 2);
+        assert!(
+            !requests.launch_simulator,
+            "a library that failed to build must not be loaded"
+        );
+        assert!(requests.error.is_some_and(|e| e.contains("status 2")));
+        assert_eq!(
+            state.build_status(),
+            Some((BuildKind::Dylib, BuildStatus::Failed(2)))
+        );
+    }
+
+    #[test]
+    fn compiling_firmware_never_opens_the_simulator() {
+        // The Daisy target produces no host library for the simulator to load.
+        let (requests, _) = build_finishing_with(BuildKind::Firmware, 0);
+        assert!(!requests.launch_simulator);
+    }
+
+    #[test]
+    fn building_twice_reuses_the_build_tab_and_kills_what_was_running() {
+        let port = Rc::new(FakePort::default());
+        let mut state = state_over(port.clone(), None);
+
+        run_build(&mut state, BuildKind::Dylib);
+        let first = port.opened.borrow().last().cloned().unwrap();
+
+        run_build(&mut state, BuildKind::Firmware);
+
+        assert!(
+            *first.killed.borrow(),
+            "a stale build is worthless once the button is pressed again"
+        );
+        assert_eq!(
+            state
+                .sessions
+                .iter()
+                .filter(|s| matches!(s.kind, SessionKind::Build(_)))
+                .count(),
+            1,
+            "repeated builds must not pile up tabs"
+        );
+        assert_eq!(
+            state.build_status(),
+            Some((BuildKind::Firmware, BuildStatus::Running))
+        );
     }
 
     #[test]

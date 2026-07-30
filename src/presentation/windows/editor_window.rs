@@ -98,6 +98,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
             if let Some(error) = requests.error {
                 state.explorer.error = Some(error);
             }
+            // A successful `make dylib` opens the simulator on what it just
+            // built, through the same path the toolbar's own button uses.
+            events.open_emulator |= requests.launch_simulator;
         });
 
     // Editor: tab strip on top, code area filling the rest.
