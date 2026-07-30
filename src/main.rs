@@ -10,14 +10,14 @@ use HeadroomLab::{
         graph_service::GraphService,
         ports::{
             AudioEnginePort, ClipboardPort, FileWatcherPort, ProjectFileSystemPort,
-            ProjectGeneratorPort,
+            ProjectGeneratorPort, TerminalPort,
         },
         recent_projects_service::RecentProjectsService,
         simulator_service::SimulatorService,
     },
     infrastructure::{
         audio_engine::AudioEngine, notify_file_watcher::NotifyFileWatcher,
-        project_generator::TemplateProjectGenerator,
+        project_generator::TemplateProjectGenerator, pty_terminal::PtyTerminal,
         recent_projects_store::FileRecentProjectsStore,
         std_fs_project_file_system::StdFsProjectFileSystem, system_clipboard::SystemClipboard,
     },
@@ -55,6 +55,17 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
             theme::install_icon_font(&cc.egui_ctx);
+
+            // Terminal output arrives on the PTY reader thread, so it has to be
+            // able to wake the UI. Injected as a bare callback rather than an
+            // `egui::Context`, which would put the UI framework inside an
+            // infrastructure adapter.
+            let ctx = cc.egui_ctx.clone();
+            let terminal: Rc<dyn TerminalPort> =
+                Rc::new(PtyTerminal::new(std::sync::Arc::new(move || {
+                    ctx.request_repaint();
+                })));
+
             Ok(Box::new(HeadroomApp::new(
                 sim_service,
                 graph_service,
@@ -64,6 +75,7 @@ fn main() -> eframe::Result<()> {
                 fs_service,
                 file_watcher,
                 clipboard,
+                terminal,
             )))
         }),
     )

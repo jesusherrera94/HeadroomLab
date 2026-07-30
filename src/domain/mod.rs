@@ -6,4 +6,5 @@ pub mod hardware_platform;
 pub mod plugin;
 pub mod project;
 pub mod signal;
+pub mod terminal;
 pub mod text_document;

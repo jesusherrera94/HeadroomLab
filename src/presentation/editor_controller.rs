@@ -3,7 +3,8 @@
 //! The explorer tree reads the opened project from disk on demand through
 //! `ProjectFileSystemPort`, one directory level per folder expansion. Tabs are
 //! now real buffers: opening a file reads and classifies it, typing marks it
-//! dirty, and Cmd/Ctrl+S writes it back. Only the terminal remains a mock.
+//! dirty, and Cmd/Ctrl+S writes it back. The terminal is live too, backed by
+//! real PTY sessions (see `terminal_controller`).
 //!
 //! Three invariants here exist to protect unsaved work, and all are easy to
 //! break by accident:
@@ -26,11 +27,13 @@ use std::time::SystemTime;
 use crate::application::file_system_service::FileSystemService;
 use crate::application::ports::{
     ClipboardPort, DirEntryInfo, FileWatchSession, FileWatcherPort, ProjectFileSystemPort,
+    TerminalPort,
 };
 use crate::domain::file_system::FileSystemError;
 use crate::domain::project::RecentProject;
 use crate::domain::text_document::{DocumentContent, Language, language_for};
 use crate::presentation::components::molecules::find_bar::FindState;
+use crate::presentation::terminal_controller::TerminalState;
 
 /// Icon shown for a tree node or tab, resolved from the file name / directory
 /// state. `Generic` is the required fallback for unknown extensions.
@@ -522,7 +525,9 @@ pub struct EditorState {
     pub scroll_active_into_view: bool,
     /// Last known 1-based cursor position in the code area, for the status bar.
     pub cursor: Option<(usize, usize)>,
-    pub terminal_lines: Vec<String>,
+    /// The built-in terminal's sessions. Owned by the editor state, so every PTY
+    /// dies with the project rather than outliving it.
+    pub terminal: TerminalState,
     pub focus_requested: bool,
 }
 
@@ -535,6 +540,7 @@ impl EditorState {
         fs_service: Rc<FileSystemService>,
         watcher: Rc<dyn FileWatcherPort>,
         clipboard: Rc<dyn ClipboardPort>,
+        terminal: Rc<dyn TerminalPort>,
     ) -> Self {
         let tree = FileTreeState::new(project, fs.as_ref());
 
@@ -546,17 +552,12 @@ impl EditorState {
             }
         };
 
-        let terminal_lines = vec![
-            format!("{} $ make dylib", project.name),
-            "  (build output will appear here)".to_string(),
-        ];
-
         Self {
             project_name: project.name.clone(),
             project_path: project.path.clone(),
             fs,
             fs_service,
-            clipboard,
+            clipboard: clipboard.clone(),
             watch,
             tree,
             explorer: ExplorerUiState::default(),
@@ -566,7 +567,12 @@ impl EditorState {
             discarded_tabs: Vec::new(),
             scroll_active_into_view: false,
             cursor: None,
-            terminal_lines,
+            terminal: TerminalState::new(
+                terminal,
+                clipboard,
+                crate::presentation::theme::terminal_palette(),
+                &project.path,
+            ),
             focus_requested: false,
         }
     }
@@ -1280,6 +1286,28 @@ mod tests {
         assert_eq!(icon_for_file("README"), NodeIcon::Generic);
     }
 
+    /// A terminal port that never opens a session. These tests are about tabs,
+    /// buffers and the watcher; spawning real PTYs for them would be slow and
+    /// would say nothing about what they check.
+    struct NoTerminal;
+
+    impl crate::application::ports::TerminalPort for NoTerminal {
+        fn open(
+            &self,
+            _shell: &crate::domain::terminal::ShellChoice,
+            _cwd: &Path,
+            _size: crate::domain::terminal::TerminalSize,
+            _palette: crate::domain::terminal::TerminalPalette,
+        ) -> Result<
+            Box<dyn crate::application::ports::TerminalSession>,
+            crate::application::ports::TerminalError,
+        > {
+            Err(crate::application::ports::TerminalError(
+                "no terminal in tests".into(),
+            ))
+        }
+    }
+
     /// Always-empty clipboard. Nothing in this module reads it — Paste lives in
     /// the code editor's context menu — but `EditorState` carries the port, so
     /// the tests need something to hold.
@@ -1465,7 +1493,12 @@ mod tests {
             discarded_tabs: Vec::new(),
             scroll_active_into_view: false,
             cursor: None,
-            terminal_lines: Vec::new(),
+            terminal: TerminalState::new(
+                Rc::new(NoTerminal),
+                Rc::new(FakeClipboard),
+                crate::presentation::theme::terminal_palette(),
+                Path::new("/proj"),
+            ),
             focus_requested: false,
         }
     }

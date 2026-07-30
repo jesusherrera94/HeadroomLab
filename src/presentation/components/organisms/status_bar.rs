@@ -5,6 +5,7 @@
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular as ph;
 
+use crate::domain::terminal::{BuildKind, BuildStatus};
 use crate::domain::text_document::{DocumentContent, language_label};
 use crate::presentation::editor_controller::{EditorTab, save_shortcut_label};
 use crate::presentation::theme;
@@ -20,6 +21,8 @@ pub struct StatusInfo<'a> {
     pub tab: Option<&'a EditorTab>,
     /// 1-based cursor position in the active buffer, when it has focus.
     pub cursor: Option<(usize, usize)>,
+    /// The terminal's build session, when there is one to report.
+    pub build: Option<(BuildKind, BuildStatus)>,
 }
 
 /// What the user did in the status bar this frame.
@@ -43,6 +46,23 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
             && tab.unsaved()
         {
             events.save = unsaved_segment(ui, tab);
+        }
+
+        // The build's outcome, coloured so a failure is visible even when the
+        // terminal panel is collapsed. Reads the same `BuildStatus` the Build
+        // tab's marker does, so the two cannot disagree.
+        if let Some((kind, status)) = info.build {
+            let color = match status {
+                BuildStatus::Running => theme::MUTED_ON_DARK,
+                BuildStatus::Succeeded => theme::LABEL_ON_DARK,
+                BuildStatus::Failed(_) => theme::ERROR_COLOR,
+            };
+            ui.label(
+                RichText::new(status.summary(kind))
+                    .font(theme::small_font())
+                    .color(color),
+            );
+            ui.add_space(12.0);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
