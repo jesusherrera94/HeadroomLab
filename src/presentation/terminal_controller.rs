@@ -75,9 +75,16 @@ pub struct TerminalRequests {
     pub copy: Option<String>,
     /// A build finished badly; the message belongs in the editor's error banner.
     pub error: Option<String>,
-    /// A `make dylib` succeeded, so the simulator should open on the library it
-    /// just produced — this is what makes the button's name honest.
-    pub launch_simulator: bool,
+    /// A `make dylib` succeeded, so the simulator should swap in the library it
+    /// just produced.
+    ///
+    /// Deliberately a *reload*, not an open: Build & Run opens the window when
+    /// the button is pressed, because creating a window on the frame a build
+    /// finishes crashes eframe (see `app_controller`).
+    pub reload_plugin: bool,
+    /// A `make dylib` failed. Build & Run must not show the emulator it was
+    /// holding ready — a library that did not build must never be run.
+    pub build_failed: bool,
 }
 
 pub struct TerminalState {
@@ -445,12 +452,13 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
                         session.status = Some(status);
                         match status {
                             // A successful `make dylib` produced the library the
-                            // simulator loads, so Build & Run can now do the
-                            // "run" half of its name.
+                            // simulator loads, so hand it to the window Build &
+                            // Run already opened.
                             BuildStatus::Succeeded if kind == BuildKind::Dylib => {
-                                requests.launch_simulator = true;
+                                requests.reload_plugin = true;
                             }
                             BuildStatus::Failed(code) => {
+                                requests.build_failed = kind == BuildKind::Dylib;
                                 requests.error = Some(format!(
                                     "{} failed with status {code}. See the Build tab for the output.",
                                     kind.label()
@@ -905,7 +913,7 @@ make: *** [build/libtest3.dylib] Error 1"
     fn a_successful_dylib_build_asks_for_the_simulator() {
         // "Build & Run" only earns the second half of its name if it runs.
         let (requests, state) = build_finishing_with(BuildKind::Dylib, 0);
-        assert!(requests.launch_simulator);
+        assert!(requests.reload_plugin);
         assert!(requests.error.is_none());
         assert_eq!(
             state.build_status(),
@@ -917,7 +925,7 @@ make: *** [build/libtest3.dylib] Error 1"
     fn a_failed_build_reports_instead_of_launching() {
         let (requests, state) = build_finishing_with(BuildKind::Dylib, 2);
         assert!(
-            !requests.launch_simulator,
+            !requests.reload_plugin,
             "a library that failed to build must not be loaded"
         );
         assert!(requests.error.is_some_and(|e| e.contains("status 2")));
@@ -928,10 +936,37 @@ make: *** [build/libtest3.dylib] Error 1"
     }
 
     #[test]
+    fn a_failed_dylib_build_asks_for_the_waiting_emulator_to_be_discarded() {
+        // The regression this guards: Build & Run creates the simulator's window
+        // up front (it can only be created on the click's frame), so a failed
+        // build has to explicitly take it away again — otherwise pressing Build
+        // & Run on broken code would show an emulator anyway.
+        let (requests, _) = build_finishing_with(BuildKind::Dylib, 2);
+        assert!(requests.build_failed);
+        assert!(!requests.reload_plugin);
+    }
+
+    #[test]
+    fn a_failed_firmware_build_leaves_the_emulator_alone() {
+        // Compile has nothing to do with the simulator, so it must not close one
+        // the user opened.
+        let (requests, _) = build_finishing_with(BuildKind::Firmware, 2);
+        assert!(!requests.build_failed);
+        assert!(!requests.reload_plugin);
+    }
+
+    #[test]
+    fn a_successful_build_never_reports_failure() {
+        let (requests, _) = build_finishing_with(BuildKind::Dylib, 0);
+        assert!(!requests.build_failed);
+        assert!(requests.reload_plugin);
+    }
+
+    #[test]
     fn compiling_firmware_never_opens_the_simulator() {
         // The Daisy target produces no host library for the simulator to load.
         let (requests, _) = build_finishing_with(BuildKind::Firmware, 0);
-        assert!(!requests.launch_simulator);
+        assert!(!requests.reload_plugin);
     }
 
     #[test]

@@ -102,9 +102,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
             if let Some(error) = requests.error {
                 state.explorer.error = Some(error);
             }
-            // A successful `make dylib` opens the simulator on what it just
-            // built, through the same path the toolbar's own button uses.
-            events.open_emulator |= requests.launch_simulator;
+            // A successful `make dylib` hands the new library to the simulator
+            // window Build & Run already opened. Deliberately *not*
+            // `open_emulator`: opening a window on this frame crashes eframe.
+            events.reload_plugin |= requests.reload_plugin;
+            events.build_failed |= requests.build_failed;
         });
 
     // Problems strip (between the code area and the terminal). Registered after

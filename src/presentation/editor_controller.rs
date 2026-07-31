@@ -701,6 +701,10 @@ pub struct CodeEvents {
 #[derive(Default)]
 pub struct EditorViewEvents {
     pub open_emulator: bool,
+    /// Set when the terminal reports a finished `make dylib`.
+    pub reload_plugin: bool,
+    /// Set when that build failed.
+    pub build_failed: bool,
     pub build_run: bool,
     pub compile: bool,
     pub tab_clicked: Option<usize>,
@@ -725,6 +729,11 @@ pub struct EditorViewEvents {
 #[derive(Default)]
 pub struct EditorRequests {
     pub open_emulator: bool,
+    /// A build produced a new effect library; swap it into an already-open
+    /// simulator. Never opens one — see `app_controller`.
+    pub reload_plugin: bool,
+    /// That build failed, so anything held ready for it must be discarded.
+    pub build_failed: bool,
     pub build_run: bool,
     pub compile: bool,
     /// A quit was confirmed despite unsaved buffers — let the close through.
@@ -843,6 +852,8 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
 
     EditorRequests {
         open_emulator: events.open_emulator,
+        reload_plugin: events.reload_plugin,
+        build_failed: events.build_failed,
         build_run: events.build_run,
         compile: events.compile,
         quit_confirmed,
