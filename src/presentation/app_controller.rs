@@ -58,6 +58,10 @@ pub struct HeadroomApp {
     clipboard: Rc<dyn ClipboardPort>,
     terminal: Rc<dyn TerminalPort>,
     windows: WindowManager,
+    /// Build & Run is waiting on a build: the simulator's window exists but is
+    /// kept hidden until the build says whether it earned the right to appear.
+    /// See `prepare_simulator` for why the window is created this early.
+    simulator_awaiting_build: bool,
 
     screen: Screen,
     splash_started: Instant,
@@ -93,6 +97,7 @@ impl HeadroomApp {
             clipboard,
             terminal,
             windows: WindowManager::default(),
+            simulator_awaiting_build: false,
             screen: Screen::Splash,
             splash_started: Instant::now(),
             initial: InitialState::default(),
@@ -233,9 +238,7 @@ impl HeadroomApp {
         );
 
         // The toolbar's build buttons run their `make` target in the terminal's
-        // Build tab. Deliberately *not* followed by launching the simulator:
-        // "Open emulator" stays the only thing that opens it, so a build never
-        // yanks a window open behind the user's back.
+        // Build tab.
         if let Some(state) = self.editor.as_mut() {
             let kind = if requests.build_run {
                 Some(BuildKind::Dylib)
@@ -253,9 +256,23 @@ impl HeadroomApp {
             }
         }
 
-        // "Open emulator" launches the simulator on the project's built dylib.
+        // "Open emulator" shows the simulator on whatever library is on disk.
         if requests.open_emulator {
             self.launch_simulator();
+        }
+        // Build & Run creates the simulator's window now but leaves it hidden;
+        // whether it is ever shown depends on the build.
+        if requests.build_run {
+            self.prepare_simulator();
+        }
+        // The build succeeded: reveal the window and load what it produced.
+        if requests.reload_plugin {
+            self.reveal_simulator();
+        }
+        // The build failed: take the hidden window away again. A library that
+        // did not build must never be run.
+        if requests.build_failed {
+            self.discard_pending_simulator();
         }
         if close_requested || requests.quit_confirmed {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
@@ -266,13 +283,7 @@ impl HeadroomApp {
     /// (`<project>/build/lib<target>.<ext>`). A missing/unbuilt library surfaces
     /// through the simulator's existing error banner.
     fn launch_simulator(&mut self) {
-        let path = self
-            .current_project
-            .as_ref()
-            .and_then(effect_dylib_path)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
+        let path = self.effect_library_path();
         let state = self.windows.open_simulator();
         match self.sim_service.load_plugin(&path) {
             Ok(()) => self.graph_service.set_plugin_path(&path),
@@ -281,6 +292,74 @@ impl HeadroomApp {
                 state.show_error = true;
             }
         }
+    }
+
+    /// Creates the simulator's window for a Build & Run, but **hidden**, and
+    /// loads nothing into it yet.
+    ///
+    /// The split between creating and showing is what makes this safe *and*
+    /// correct. Creating a viewport's window can only happen on a frame that has
+    /// eframe's thread-local event loop set (`wgpu_integration.rs:1082`) — true
+    /// of this click, false of the frame a finished build lands on, because this
+    /// app hides its root window and eframe paints invisible windows straight
+    /// from `new_events`, the one handler it never wraps (`run.rs:343` → `:222`).
+    /// Creating it there fails silently and egui then asserts.
+    ///
+    /// Showing it, by contrast, is just a viewport command and needs nothing.
+    /// So the window is made here and only revealed if the build earns it —
+    /// which is why a failed build still never opens the emulator.
+    fn prepare_simulator(&mut self) {
+        if self.windows.simulator.is_some() {
+            // Already on screen: nothing to hide, and nothing to create.
+            return;
+        }
+        self.windows.open_simulator();
+        self.simulator_awaiting_build = true;
+    }
+
+    /// The build succeeded: show the window prepared above and load the library
+    /// it produced. Never creates a window.
+    fn reveal_simulator(&mut self) {
+        self.simulator_awaiting_build = false;
+        let Some(state) = self.windows.simulator.as_mut() else {
+            // The user closed it while the build ran — they have said they do
+            // not want it, and opening one here is the unsafe case anyway.
+            return;
+        };
+        state.focus_requested = true;
+
+        let path = self.effect_library_path();
+        match self.sim_service.load_plugin(&path) {
+            Ok(()) => self.graph_service.set_plugin_path(&path),
+            Err(e) => {
+                if let Some(state) = self.windows.simulator.as_mut() {
+                    state.error_message = e.to_string();
+                    state.show_error = true;
+                }
+            }
+        }
+    }
+
+    /// The build failed: drop the window that was waiting on it, so nothing is
+    /// ever shown running a library that did not build.
+    ///
+    /// Only touches a simulator this build was holding hidden — one the user
+    /// opened themselves stays open.
+    fn discard_pending_simulator(&mut self) {
+        if self.simulator_awaiting_build {
+            self.simulator_awaiting_build = false;
+            self.windows.close_simulator();
+        }
+    }
+
+    /// `<project>/build/lib<target>.<ext>`, or empty when no project is open —
+    /// a missing library surfaces through the simulator's error banner.
+    fn effect_library_path(&self) -> String {
+        self.current_project
+            .as_ref()
+            .and_then(effect_dylib_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 
     fn show_simulator_viewport(&mut self, ctx: &egui::Context) {
@@ -304,7 +383,12 @@ impl HeadroomApp {
             viewport_id,
             ViewportBuilder::default()
                 .with_title("HeadroomLab - Hardware Simulator")
-                .with_inner_size([640.0, 640.0]),
+                .with_inner_size([640.0, 640.0])
+                // Hidden while a Build & Run is in flight: the window has to
+                // exist by now (it can only be created on a frame like the one
+                // the button was clicked on) but must not be seen until the
+                // build has succeeded.
+                .with_visible(!self.simulator_awaiting_build),
             |ui, _class| {
                 let events = simulator_window::show(ui, state);
                 let requests =

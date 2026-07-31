@@ -5,6 +5,7 @@
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular as ph;
 
+use crate::domain::diagnostics::{Counts, summary};
 use crate::domain::terminal::{BuildKind, BuildStatus};
 use crate::domain::text_document::{DocumentContent, language_label};
 use crate::presentation::editor_controller::{EditorTab, save_shortcut_label};
@@ -23,6 +24,8 @@ pub struct StatusInfo<'a> {
     pub cursor: Option<(usize, usize)>,
     /// The terminal's build session, when there is one to report.
     pub build: Option<(BuildKind, BuildStatus)>,
+    /// Errors and warnings from the last build, across the whole project.
+    pub diagnostics: Counts,
 }
 
 /// What the user did in the status bar this frame.
@@ -72,6 +75,19 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
 
             let (line, col) = info.cursor.unwrap_or((1, 1));
             segment(ui, &format!("Ln {line}, Col {col}"));
+
+            // `2 errors · 1 warning`, red as soon as anything is an error.
+            // Absent entirely on a clean build — `summary` returns `None` — so a
+            // project with nothing wrong costs no space and says nothing.
+            if let Some(text) = summary(info.diagnostics) {
+                let color = if info.diagnostics.errors > 0 {
+                    theme::DIAGNOSTIC_ERROR
+                } else {
+                    theme::DIAGNOSTIC_WARNING
+                };
+                ui.label(RichText::new(text).font(theme::small_font()).color(color));
+                ui.add_space(10.0);
+            }
 
             if let Some(tab) = info.tab {
                 // A buffer past the highlight threshold is still editable, so say

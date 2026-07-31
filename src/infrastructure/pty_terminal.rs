@@ -124,6 +124,17 @@ impl TerminalSession for PtySession {
         snapshot_of(&term, &self.palette)
     }
 
+    fn logical_text(&self) -> String {
+        let term = self.term.lock();
+        // `bounds_to_string` walks the grid rejoining rows whose last cell
+        // carries `Flags::WRAPLINE`, which is the same path alacritty's own
+        // copy-to-clipboard takes. Spanning `topmost_line`..`bottommost_line`
+        // covers the scrollback as well as the screen.
+        let start = Point::new(term.topmost_line(), Column(0));
+        let end = Point::new(term.bottommost_line(), term.last_column());
+        term.bounds_to_string(start, end)
+    }
+
     fn drain_events(&self) -> Vec<TerminalEvent> {
         self.events.try_iter().collect()
     }
@@ -539,6 +550,58 @@ mod tests {
         // And it is still there on a later read, not just once.
         assert!(screen_text(session.as_ref()).contains("error: undefined reference"));
         assert!(events.contains(&TerminalEvent::ChildExit(Some(2))));
+    }
+
+    /// The whole reason diagnostics are parsed from `logical_text` rather than
+    /// from the rendered grid: a compiler error is far longer than the panel is
+    /// wide, so the emulator hard-wraps it across rows. `bounds_to_string`
+    /// rejoins them via `Flags::WRAPLINE`, and only then does `file:line:col`
+    /// still match.
+    #[test]
+    #[cfg(unix)]
+    fn a_line_wider_than_the_grid_is_rejoined_for_parsing() {
+        use crate::domain::diagnostics::{Severity, parse_diagnostics};
+
+        let terminal = PtyTerminal::new(Arc::new(|| {}));
+        // 40 columns wide (see `size()`), so this ~120-character diagnostic is
+        // wrapped over three rows on screen.
+        let long_path = "src/very/deeply/nested/directory/effect_processor.cpp";
+        let message = "use of undeclared identifier 'cutof'; did you mean 'cutoff'?";
+        let line = format!("{long_path}:14:24: error: {message}");
+        let shell = ShellChoice::new("/bin/sh", &["-c", &format!("printf '%s\\n' \"{line}\"")]);
+
+        let session = terminal
+            .open(&shell, Path::new("/"), size(), test_palette())
+            .expect("PTY should open");
+
+        let mut events = Vec::new();
+        let finished = wait_for(session.as_ref(), &mut events, |session, events| {
+            events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::ChildExit(_)))
+                && !parse_diagnostics(&session.logical_text()).is_empty()
+        });
+        assert!(
+            finished,
+            "nothing parsed; logical text was {:?}",
+            session.logical_text()
+        );
+
+        // The rendered grid really did split it — otherwise this test proves
+        // nothing about rejoining.
+        let rendered = screen_text(session.as_ref());
+        assert!(
+            !rendered.lines().any(|row| row.contains(&line)),
+            "expected the grid to have wrapped the line, but a row held it whole"
+        );
+
+        let parsed = parse_diagnostics(&session.logical_text());
+        assert_eq!(parsed.len(), 1, "got {parsed:?}");
+        assert_eq!(parsed[0].severity, Severity::Error);
+        assert_eq!(parsed[0].file.as_deref(), Some(long_path));
+        assert_eq!(parsed[0].line, Some(14));
+        assert_eq!(parsed[0].column, Some(24));
+        assert_eq!(parsed[0].message, message);
     }
 
     #[test]

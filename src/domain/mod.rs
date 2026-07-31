@@ -1,5 +1,6 @@
 pub mod audio_processor;
 pub mod audio_track;
+pub mod diagnostics;
 pub mod editing;
 pub mod file_system;
 pub mod hardware_platform;

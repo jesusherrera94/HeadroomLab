@@ -169,6 +169,15 @@ pub trait TerminalSession {
     /// A copy of the visible screen for this frame.
     fn snapshot(&self) -> TerminalSnapshot;
 
+    /// Everything the session has printed, screen and scrollback, as **logical**
+    /// lines — rows the emulator hard-wrapped are rejoined.
+    ///
+    /// This is what diagnostics are parsed from. Reading the rendered grid
+    /// instead would split a long compiler error across rows and defeat any
+    /// `file:line:col` match; and unlike the raw PTY bytes, this text has already
+    /// had its ANSI colour escapes interpreted away.
+    fn logical_text(&self) -> String;
+
     /// Everything reported since the last call. Draining rather than peeking, so
     /// each event is acted on once.
     fn drain_events(&self) -> Vec<TerminalEvent>;

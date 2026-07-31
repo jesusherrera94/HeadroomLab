@@ -57,6 +57,15 @@ pub const UNSAVED_DOT: Color32 = Color32::from_rgb(0xe2, 0xc0, 0x8d);
 /// that syntax-coloured text stays legible on top of it.
 pub const FIND_MATCH: Color32 = Color32::from_rgb(0x6b, 0x51, 0x1c);
 
+/// Squiggles, problem rows and the status bar's error count. Brighter than
+/// `ERROR_COLOR`, which is a banner fill and too dark to read against the code
+/// background.
+pub const DIAGNOSTIC_ERROR: Color32 = Color32::from_rgb(0xf4, 0x87, 0x71);
+
+/// The warning equivalent. Aliases `UNSAVED_DOT` rather than repeating its value
+/// — the prototype uses one amber for both.
+pub const DIAGNOSTIC_WARNING: Color32 = UNSAVED_DOT;
+
 /// Background behind selected terminal text.
 pub const TERMINAL_SELECTION: Color32 = Color32::from_rgb(0x2d, 0x44, 0x5c);
 

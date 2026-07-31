@@ -5,6 +5,7 @@
 use eframe::egui;
 
 use crate::application::ports::ClipboardPort;
+use crate::domain::diagnostics::{Diagnostic, Severity, span_in};
 use crate::domain::editing::find_matches;
 use crate::domain::text_document::DocumentContent;
 use crate::presentation::components::molecules::code_editor::{CodeEditorRequest, code_editor};
@@ -13,6 +14,7 @@ use crate::presentation::components::molecules::code_placeholder::{
 };
 use crate::presentation::components::molecules::find_bar::find_bar;
 use crate::presentation::editor_controller::{EditorTab, TabId};
+use crate::presentation::theme;
 
 /// The `TextEdit`'s id, and so the key under which egui keeps that buffer's
 /// cursor, selection, scroll offset and undo history.
@@ -44,6 +46,8 @@ pub fn code_pane(
     ui: &mut egui::Ui,
     tab: Option<&mut EditorTab>,
     clipboard: &dyn ClipboardPort,
+    diagnostics: &[Diagnostic],
+    stale: bool,
 ) -> CodePaneEvents {
     let mut events = CodePaneEvents::default();
 
@@ -91,6 +95,32 @@ pub fn code_pane(
         ui.add_space(4.0);
     }
 
+    // A jump from the problems strip wins over a find hit: they cannot both
+    // happen in one frame, and taking it here consumes it so the caret moves
+    // once rather than on every later paint.
+    if let Some(span) = tab.pending_select.take() {
+        select = Some(span);
+    }
+
+    // Squiggles for this buffer. Dropped entirely once the file has been edited:
+    // the compiler's line numbers describe text that no longer exists, so a mark
+    // would sit under whatever moved into that line.
+    let squiggles: Vec<(std::ops::Range<usize>, egui::Color32)> = match (stale, tab.content.text())
+    {
+        (false, Some(text)) => diagnostics
+            .iter()
+            .filter_map(|d| {
+                let span = span_in(text, d.line?, d.column)?;
+                let color = match d.severity {
+                    Severity::Error => theme::DIAGNOSTIC_ERROR,
+                    Severity::Warning => theme::DIAGNOSTIC_WARNING,
+                };
+                Some((span, color))
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
     let id = editor_id(tab.id);
     let language = tab.language;
 
@@ -117,6 +147,7 @@ pub fn code_pane(
                     select,
                     match_range,
                     clipboard,
+                    squiggles: &squiggles,
                 },
             );
             events.edited = output.changed;

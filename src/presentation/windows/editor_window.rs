@@ -3,6 +3,8 @@
 //! Every panel is live: the terminal runs real PTY sessions, and the toolbar's
 //! build buttons feed their `make` target into its Build tab.
 
+use std::path::{Path, PathBuf};
+
 use eframe::egui;
 
 use crate::presentation::components::molecules::confirm_modal::{
@@ -13,6 +15,7 @@ use crate::presentation::components::molecules::error_dialog::error_dialog;
 use crate::presentation::components::organisms::code_pane::code_pane;
 use crate::presentation::components::organisms::editor_toolbar::editor_toolbar;
 use crate::presentation::components::organisms::file_explorer::file_explorer;
+use crate::presentation::components::organisms::problems_strip;
 use crate::presentation::components::organisms::status_bar::{StatusInfo, status_bar};
 use crate::presentation::components::organisms::terminal_panel;
 use crate::presentation::editor_controller::{self, EditorState, EditorViewEvents};
@@ -66,6 +69,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
                 tab: state.tabs.get(state.active_tab),
                 cursor: state.cursor,
                 build: state.terminal.build_status(),
+                diagnostics: state.terminal.diagnostic_counts(),
             },
         );
         events.code.save |= bar.save;
@@ -98,10 +102,36 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
             if let Some(error) = requests.error {
                 state.explorer.error = Some(error);
             }
-            // A successful `make dylib` opens the simulator on what it just
-            // built, through the same path the toolbar's own button uses.
-            events.open_emulator |= requests.launch_simulator;
+            // A successful `make dylib` hands the new library to the simulator
+            // window Build & Run already opened. Deliberately *not*
+            // `open_emulator`: opening a window on this frame crashes eframe.
+            events.reload_plugin |= requests.reload_plugin;
+            events.build_failed |= requests.build_failed;
         });
+
+    // Problems strip (between the code area and the terminal). Registered after
+    // the terminal panel so it sits above it, and it draws nothing at all when
+    // the last build was clean.
+    if !state.terminal.diagnostics.is_empty() {
+        let diagnostics = std::mem::take(&mut state.terminal.diagnostics);
+        let stale: Vec<PathBuf> = state.terminal.stale_files.iter().cloned().collect();
+        let root = state.project_path.clone();
+
+        let mut jump = None;
+        egui::Panel::bottom("problems")
+            .resizable(true)
+            .default_size(76.0)
+            .show(ui, |ui| {
+                jump = problems_strip::problems_strip(ui, &diagnostics, &|file| {
+                    is_stale(&root, &stale, file)
+                });
+            });
+
+        state.terminal.diagnostics = diagnostics;
+        if let Some(jump) = jump {
+            editor_controller::jump_to_diagnostic(state, &jump.file, jump.line, jump.column);
+        }
+    }
 
     // Editor: tab strip on top, code area filling the rest.
     let any_unsaved = !unsaved.is_empty();
@@ -164,7 +194,36 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
             // Cloned out before the tabs are borrowed mutably; the code editor's
             // Paste menu item needs it, and egui has no clipboard read of its own.
             let clipboard = state.clipboard.clone();
-            let pane = code_pane(ui, state.tabs.get_mut(active), clipboard.as_ref());
+
+            // Diagnostics for the buffer about to be drawn, and whether it has
+            // been edited since the build that produced them. Both are resolved
+            // here, before `tabs` is borrowed mutably.
+            let active_path = state.tabs.get(active).map(|tab| tab.path.clone());
+            let (mine, stale) = match &active_path {
+                Some(path) => (
+                    state
+                        .terminal
+                        .diagnostics
+                        .iter()
+                        .filter(|d| {
+                            d.file.as_deref().is_some_and(|file| {
+                                names_same_file(&state.project_path, path, file)
+                            })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    state.terminal.is_stale(path),
+                ),
+                None => (Vec::new(), false),
+            };
+
+            let pane = code_pane(
+                ui,
+                state.tabs.get_mut(active),
+                clipboard.as_ref(),
+                &mine,
+                stale,
+            );
             events.code.edited = pane.edited;
             events.code.reload = pane.reload;
             events.code.close_find |= pane.close_find;
@@ -199,4 +258,38 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
     }
 
     events
+}
+
+/// Whether the file a diagnostic names has been edited since the build.
+///
+/// The compiler's path and the editor's path rarely match verbatim — one is
+/// relative to `make`'s working directory, the other absolute — so this compares
+/// the resolved path first and falls back to the file name.
+fn is_stale(root: &Path, stale: &[PathBuf], file: &str) -> bool {
+    let candidate = Path::new(file);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    stale.iter().any(|path| {
+        *path == resolved
+            || (candidate.file_name().is_some() && path.file_name() == candidate.file_name())
+    })
+}
+
+/// Whether the path a compiler wrote refers to the buffer at `path`.
+///
+/// Resolved against the project root first — `make` runs there, so most paths
+/// are relative to it — and by file name as a fallback, which covers the forms
+/// that do not survive a shell (git-bash's `/c/...` on Windows).
+fn names_same_file(root: &Path, path: &Path, file: &str) -> bool {
+    let candidate = Path::new(file);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    path == resolved
+        || (candidate.file_name().is_some() && path.file_name() == candidate.file_name())
 }
