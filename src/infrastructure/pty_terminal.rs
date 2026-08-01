@@ -234,8 +234,15 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
     let mut cells = vec![default; cols as usize * rows as usize];
 
     let selection = content.selection;
+    // `display_iter` yields *grid* coordinates, whose lines run negative into
+    // the scrollback. A viewport row is `grid line + display_offset` — the same
+    // translation alacritty's own renderer applies (`point_to_viewport`).
+    // Without it, scrolling back would discard every history row (negative
+    // line) and leave the bottom `display_offset` rows blank instead of moving
+    // the text.
+    let display_offset = content.display_offset as i32;
     for item in content.display_iter {
-        let line = item.point.line.0;
+        let line = item.point.line.0 + display_offset;
         let column = item.point.column.0;
         if line < 0 || line as u16 >= rows || column as u16 >= cols {
             continue;
@@ -277,13 +284,15 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
     }
 
     // The cursor is only drawn when it is on screen and not hidden — scrolling
-    // back into history must not leave a caret floating over old output.
+    // back into history pushes its viewport row past `rows`, so no caret is
+    // left floating over old output.
     let cursor_point = content.cursor.point;
+    let cursor_line = cursor_point.line.0 + display_offset;
     let cursor = (content.cursor.shape != alacritty_terminal::vte::ansi::CursorShape::Hidden
-        && cursor_point.line.0 >= 0
-        && (cursor_point.line.0 as u16) < rows
+        && cursor_line >= 0
+        && (cursor_line as u16) < rows
         && (cursor_point.column.0 as u16) < cols)
-        .then(|| (cursor_point.column.0 as u16, cursor_point.line.0 as u16));
+        .then(|| (cursor_point.column.0 as u16, cursor_line as u16));
 
     TerminalSnapshot {
         cols,
@@ -550,6 +559,54 @@ mod tests {
         // And it is still there on a later read, not just once.
         assert!(screen_text(session.as_ref()).contains("error: undefined reference"));
         assert!(events.contains(&TerminalEvent::ChildExit(Some(2))));
+    }
+
+    /// Regression: `display_iter` yields grid coordinates, which have to be
+    /// shifted by `display_offset` into viewport rows. Forgetting the shift
+    /// makes scrolling back *drop* the history rows (their grid lines are
+    /// negative) and leave the bottom of the panel blank — the "black box over
+    /// a log that will not scroll" bug.
+    #[test]
+    #[cfg(unix)]
+    fn scrolling_back_shows_history_instead_of_a_blank_gap() {
+        let terminal = PtyTerminal::new(Arc::new(|| {}));
+        // 30 lines into an 8-row grid: 22 of them end up in the scrollback.
+        let shell = ShellChoice::new(
+            "/bin/sh",
+            &["-c", "i=1; while [ $i -le 30 ]; do echo \"line $i\"; i=$((i+1)); done"],
+        );
+        let session = terminal
+            .open(&shell, Path::new("/"), size(), test_palette())
+            .expect("PTY should open");
+
+        let mut events = Vec::new();
+        let finished = wait_for(session.as_ref(), &mut events, |session, events| {
+            events
+                .iter()
+                .any(|e| matches!(e, TerminalEvent::ChildExit(_)))
+                && screen_text(session).contains("line 30")
+        });
+        assert!(
+            finished,
+            "the tail of the output should be on screen; grid was {:?}",
+            screen_text(session.as_ref())
+        );
+
+        session.scroll(10);
+
+        let scrolled = screen_text(session.as_ref());
+        assert!(
+            !scrolled.contains("line 30"),
+            "scrolling back must move the tail off screen; grid was {scrolled:?}"
+        );
+        assert!(
+            scrolled.contains("line 15"),
+            "scrolling back must bring history into view; grid was {scrolled:?}"
+        );
+        assert!(
+            !scrolled.lines().last().unwrap_or_default().is_empty(),
+            "the bottom rows must hold scrolled content, not a blank gap; grid was {scrolled:?}"
+        );
     }
 
     /// The whole reason diagnostics are parsed from `logical_text` rather than
