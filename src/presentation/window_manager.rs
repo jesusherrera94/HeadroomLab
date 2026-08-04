@@ -2,7 +2,11 @@
 //! state. Dropping a state closes the corresponding viewport on the next
 //! frame; dropping the graph session also shuts its compute worker down.
 
+use std::rc::Rc;
+
 use crate::application::graph_service::GraphService;
+use crate::application::ports::DoomPort;
+use crate::presentation::doom_controller::DoomState;
 use crate::presentation::graph_controller::GraphSession;
 use crate::presentation::simulation_controller::SimulatorState;
 
@@ -10,6 +14,7 @@ use crate::presentation::simulation_controller::SimulatorState;
 pub struct WindowManager {
     pub simulator: Option<SimulatorState>,
     pub graph: Option<GraphSession>,
+    pub doom: Option<DoomState>,
 }
 
 impl WindowManager {
@@ -32,6 +37,16 @@ impl WindowManager {
         }
     }
 
+    /// Opens the DOOM.666 window, reusing the running game (and bringing the
+    /// window back to the front) if it's already open — clicking the file
+    /// twice must not reset a run in progress.
+    pub fn open_doom(&mut self, port: &Rc<dyn DoomPort>) {
+        match &mut self.doom {
+            Some(state) => state.focus_requested = true,
+            None => self.doom = Some(DoomState::open(port.clone())),
+        }
+    }
+
     pub fn close_simulator(&mut self) {
         self.simulator = None;
     }
@@ -40,8 +55,13 @@ impl WindowManager {
         self.graph = None;
     }
 
+    pub fn close_doom(&mut self) {
+        self.doom = None;
+    }
+
     pub fn close_all(&mut self) {
         self.simulator = None;
         self.graph = None;
+        self.doom = None;
     }
 }

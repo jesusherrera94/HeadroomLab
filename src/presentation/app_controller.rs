@@ -19,7 +19,8 @@ use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 use crate::application::file_system_service::FileSystemService;
 use crate::application::graph_service::GraphService;
 use crate::application::ports::{
-    ClipboardPort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort, TerminalPort,
+    ClipboardPort, DoomPort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort,
+    TerminalPort,
 };
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
@@ -32,7 +33,7 @@ use crate::presentation::simulation_controller;
 use crate::presentation::terminal_controller;
 use crate::presentation::window_manager::WindowManager;
 use crate::presentation::windows::{
-    editor_window, graph_window, initial_window, simulator_window, splash_window,
+    doom_window, editor_window, graph_window, initial_window, simulator_window, splash_window,
 };
 
 /// Cadence of the playhead/graph sync, matching the old UI timers.
@@ -57,6 +58,7 @@ pub struct HeadroomApp {
     file_watcher: Rc<dyn FileWatcherPort>,
     clipboard: Rc<dyn ClipboardPort>,
     terminal: Rc<dyn TerminalPort>,
+    doom: Rc<dyn DoomPort>,
     windows: WindowManager,
     /// Build & Run is waiting on a build: the simulator's window exists but is
     /// kept hidden until the build says whether it earned the right to appear.
@@ -85,6 +87,7 @@ impl HeadroomApp {
         file_watcher: Rc<dyn FileWatcherPort>,
         clipboard: Rc<dyn ClipboardPort>,
         terminal: Rc<dyn TerminalPort>,
+        doom: Rc<dyn DoomPort>,
     ) -> Self {
         Self {
             sim_service,
@@ -96,6 +99,7 @@ impl HeadroomApp {
             file_watcher,
             clipboard,
             terminal,
+            doom,
             windows: WindowManager::default(),
             simulator_awaiting_build: false,
             screen: Screen::Splash,
@@ -260,6 +264,12 @@ impl HeadroomApp {
         if requests.open_emulator {
             self.launch_simulator();
         }
+        // Clicking DOOM.666 opens the game. Created here, on the click's
+        // frame, for the same reason `prepare_simulator` documents: a viewport
+        // window can only be created while eframe's event-loop TLS is set.
+        if requests.open_doom {
+            self.windows.open_doom(&self.doom);
+        }
         // Build & Run creates the simulator's window now but leaves it hidden;
         // whether it is ever shown depends on the build.
         if requests.build_run {
@@ -406,6 +416,36 @@ impl HeadroomApp {
         }
     }
 
+    fn show_doom_viewport(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.windows.doom.as_mut() else {
+            return;
+        };
+
+        let viewport_id = ViewportId::from_hash_of("doom_window");
+        if state.focus_requested {
+            state.focus_requested = false;
+            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+        }
+
+        let mut close_requested = false;
+        ctx.show_viewport_immediate(
+            viewport_id,
+            ViewportBuilder::default()
+                .with_title("HeadroomLab - DOOM.666")
+                // 3× the engine's 320×200 frame, stretched to 4:3 the way the
+                // original was.
+                .with_inner_size([960.0, 720.0]),
+            |ui, _class| {
+                doom_window::show(ui, state);
+                close_requested = ui.ctx().input(|i| i.viewport().close_requested());
+            },
+        );
+
+        if close_requested {
+            self.windows.close_doom();
+        }
+    }
+
     fn show_graph_viewport(&mut self, ctx: &egui::Context) {
         let Some(session) = self.windows.graph.as_mut() else {
             return;
@@ -471,6 +511,7 @@ impl eframe::App for HeadroomApp {
                 self.show_editor_viewport(&ctx);
                 self.show_simulator_viewport(&ctx);
                 self.show_graph_viewport(&ctx);
+                self.show_doom_viewport(&ctx);
             }
         }
 
