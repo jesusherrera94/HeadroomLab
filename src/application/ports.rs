@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::domain::doom::DoomControls;
 use crate::domain::file_system::FileSystemError;
 use crate::domain::plugin::PluginError;
 use crate::domain::project::RecentProject;
@@ -196,6 +197,46 @@ pub trait TerminalSession {
 
     /// Ends the child process. Called on drop, and by the build's kill-and-restart.
     fn kill(&self);
+}
+
+/// Why the game could not start. Rendered inside the game window with a Retry
+/// button, like a terminal session that failed to spawn — an easter egg that
+/// will not open is even less of a reason to block the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoomError(pub String);
+
+impl std::fmt::Display for DoomError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Starts a game of Doom. The concrete engine (`neurodoom`) and the game data
+/// it runs stay behind this, so nothing above `infrastructure` names either.
+pub trait DoomPort {
+    fn start(&self) -> Result<Box<dyn DoomGame>, DoomError>;
+}
+
+/// One running game.
+///
+/// Hands out domain types only — [`DoomControls`] in, an RGBA frame out — the
+/// same rule `TerminalSession` follows with `TerminalSnapshot`.
+pub trait DoomGame {
+    /// Advances one 35 Hz simulation tick with the controls currently held.
+    /// The caller owns the cadence (`domain::doom::due_ticks`).
+    fn tick(&mut self, controls: DoomControls);
+
+    /// The last rendered frame: RGBA bytes,
+    /// `DOOM_SCREEN_WIDTH × DOOM_SCREEN_HEIGHT × 4`.
+    fn frame(&self) -> &[u8];
+
+    /// Whether the player has crossed the level's exit line. This easter egg
+    /// ends here — there is no E1M2.
+    fn level_complete(&self) -> bool;
+
+    /// Whether the player is dead. The world keeps ticking either way (the
+    /// death view is part of the game); the window offers a restart.
+    fn player_dead(&self) -> bool;
 }
 
 /// Reads the system clipboard, for the code editor's **Paste** menu item.

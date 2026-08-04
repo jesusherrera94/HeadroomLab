@@ -9,16 +9,16 @@ use HeadroomLab::{
         file_system_service::FileSystemService,
         graph_service::GraphService,
         ports::{
-            AudioEnginePort, ClipboardPort, FileWatcherPort, ProjectFileSystemPort,
+            AudioEnginePort, ClipboardPort, DoomPort, FileWatcherPort, ProjectFileSystemPort,
             ProjectGeneratorPort, TerminalPort,
         },
         recent_projects_service::RecentProjectsService,
         simulator_service::SimulatorService,
     },
     infrastructure::{
-        audio_engine::AudioEngine, notify_file_watcher::NotifyFileWatcher,
-        project_generator::TemplateProjectGenerator, pty_terminal::PtyTerminal,
-        recent_projects_store::FileRecentProjectsStore,
+        audio_engine::AudioEngine, doom_engine::NeurodoomEngine,
+        notify_file_watcher::NotifyFileWatcher, project_generator::TemplateProjectGenerator,
+        pty_terminal::PtyTerminal, recent_projects_store::FileRecentProjectsStore,
         std_fs_project_file_system::StdFsProjectFileSystem, system_clipboard::SystemClipboard,
     },
     presentation::{app_controller::HeadroomApp, theme},
@@ -39,6 +39,7 @@ fn main() -> eframe::Result<()> {
     let fs_service = Rc::new(FileSystemService::new(file_system.clone()));
     let file_watcher: Rc<dyn FileWatcherPort> = Rc::new(NotifyFileWatcher::new());
     let clipboard: Rc<dyn ClipboardPort> = Rc::new(SystemClipboard::new());
+    let doom: Rc<dyn DoomPort> = Rc::new(NeurodoomEngine::new());
 
     // The root window is the Splash screen.
     let options = eframe::NativeOptions {
@@ -76,6 +77,7 @@ fn main() -> eframe::Result<()> {
                 file_watcher,
                 clipboard,
                 terminal,
+                doom,
             )))
         }),
     )

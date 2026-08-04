@@ -729,6 +729,9 @@ pub struct EditorViewEvents {
 #[derive(Default)]
 pub struct EditorRequests {
     pub open_emulator: bool,
+    /// A file named `DOOM.666` was clicked. It does not open in a tab; it
+    /// opens in a window with a shotgun.
+    pub open_doom: bool,
     /// A build produced a new effect library; swap it into an already-open
     /// simulator. Never opens one — see `app_controller`.
     pub reload_plugin: bool,
@@ -833,7 +836,7 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
         state.explorer.error = Some(e.to_string());
     }
 
-    handle_explorer(state, events.explorer);
+    let open_doom = handle_explorer(state, events.explorer);
     handle_code(state, events.code);
 
     let mut quit_confirmed = false;
@@ -852,6 +855,7 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
 
     EditorRequests {
         open_emulator: events.open_emulator,
+        open_doom,
         reload_plugin: events.reload_plugin,
         build_failed: events.build_failed,
         build_run: events.build_run,
@@ -974,7 +978,11 @@ pub fn request_quit(state: &mut EditorState) -> bool {
     true
 }
 
-fn handle_explorer(state: &mut EditorState, events: ExplorerEvents) {
+/// Returns whether the click asked for the DOOM.666 window — the one file in
+/// the tree that opens as a game instead of a buffer.
+fn handle_explorer(state: &mut EditorState, events: ExplorerEvents) -> bool {
+    let mut open_doom = false;
+
     // Lazily read the children of any folder opened this frame.
     let fs = state.fs.clone();
     for path in events.expand {
@@ -988,7 +996,13 @@ fn handle_explorer(state: &mut EditorState, events: ExplorerEvents) {
 
     if let Some(path) = events.open {
         state.tree.selected = Some(path.clone());
-        open_tab(state, &path);
+        if crate::domain::doom::is_doom_file(&path) {
+            // Never a tab: the whole point of the ritual is that the "file"
+            // is a door.
+            open_doom = true;
+        } else {
+            open_tab(state, &path);
+        }
     }
     if let Some(path) = events.select {
         state.tree.selected = Some(path);
@@ -1037,6 +1051,8 @@ fn handle_explorer(state: &mut EditorState, events: ExplorerEvents) {
     {
         state.explorer.error = Some(e.to_string());
     }
+
+    open_doom
 }
 
 fn commit_create(state: &mut EditorState) {
