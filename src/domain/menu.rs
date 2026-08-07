@@ -62,9 +62,6 @@ pub enum PredefinedItem {
     Hide,
     HideOthers,
     ShowAll,
-    Minimize,
-    Zoom,
-    BringAllToFront,
 }
 
 /// The Simulator's transport actions, mirroring `TransportEvents`.
@@ -240,7 +237,6 @@ pub const CLOSE_WINDOW: Chord = Chord::cmd_shift("W");
 pub const QUIT: Chord = Chord::cmd("Q");
 pub const HIDE: Chord = Chord::cmd("H");
 pub const HIDE_OTHERS: Chord = Chord::cmd_alt("H");
-pub const MINIMIZE: Chord = Chord::cmd("M");
 pub const BUILD_RUN: Chord = Chord::cmd("R");
 pub const COMPILE: Chord = Chord::cmd("B");
 pub const PLAY_PAUSE: Chord = Chord::plain("Space");
@@ -397,7 +393,7 @@ impl MenuModel {
                 edit_menu(&ctx),
                 build_menu(&ctx),
                 transport_menu(&ctx),
-                window_menu(&ctx, surface),
+                window_menu(&ctx),
                 help_menu(),
             ],
             // D14: only the menus this window can act on. The App menu has no
@@ -406,20 +402,18 @@ impl MenuModel {
                 file_menu(&ctx, surface),
                 edit_menu(&ctx),
                 build_menu(&ctx),
-                window_menu(&ctx, surface),
+                window_menu(&ctx),
                 help_menu(),
             ],
             MenuSurface::Window(WindowId::Simulator) => vec![
                 file_menu(&ctx, surface),
                 transport_menu(&ctx),
-                window_menu(&ctx, surface),
+                window_menu(&ctx),
                 help_menu(),
             ],
-            MenuSurface::Window(WindowId::Graph) => vec![
-                file_menu(&ctx, surface),
-                window_menu(&ctx, surface),
-                help_menu(),
-            ],
+            MenuSurface::Window(WindowId::Graph) => {
+                vec![file_menu(&ctx, surface), window_menu(&ctx), help_menu()]
+            }
             // Splash, Initial and DOOM draw no strip (S4).
             MenuSurface::Window(_) => Vec::new(),
         };
@@ -714,20 +708,17 @@ fn transport_menu(ctx: &MenuContext) -> Menu {
     }
 }
 
-fn window_menu(ctx: &MenuContext, surface: MenuSurface) -> Menu {
+fn window_menu(ctx: &MenuContext) -> Menu {
     let mut entries = Vec::new();
 
-    // Minimize and Zoom are the OS's, and off macOS the title bar already offers
-    // both — so the per-window bar is just the window list.
-    if surface == MenuSurface::Global {
-        entries.push(predefined(
-            "Minimize",
-            Some(MINIMIZE),
-            PredefinedItem::Minimize,
-        ));
-        entries.push(predefined("Zoom", None, PredefinedItem::Zoom));
-        entries.push(MenuEntry::Separator);
-    }
+    // Deliberately no Minimize, Zoom or Bring All to Front.
+    //
+    // Every window here is a child viewport of a root that is hidden after the
+    // splash, and macOS's own restore routes do not reach such a window: Bring
+    // All to Front only unhides, never de-miniaturises, and there is no visible
+    // root in the Dock to click. A menu-driven Minimize is therefore a one-way
+    // door. The title bar still offers both, and the window list below un-
+    // minimises whatever it focuses, so nothing is lost and nothing traps.
 
     let mut window = |id: WindowId, enabled: bool| {
         entries.push(checkable(
@@ -747,15 +738,6 @@ fn window_menu(ctx: &MenuContext, surface: MenuSurface) -> Menu {
     // found it for themselves; advertising it here would give the joke away.
     if ctx.doom_open {
         window(WindowId::Doom, true);
-    }
-
-    if surface == MenuSurface::Global {
-        entries.push(MenuEntry::Separator);
-        entries.push(predefined(
-            "Bring All to Front",
-            None,
-            PredefinedItem::BringAllToFront,
-        ));
     }
 
     Menu {
@@ -1015,6 +997,26 @@ mod tests {
             ..editing()
         });
         assert!(shown.is_enabled(MenuCommand::FocusWindow(WindowId::Doom)));
+    }
+
+    /// The Window menu offers no Minimize / Zoom / Bring All to Front.
+    ///
+    /// With the root hidden after the splash, macOS has no route back to a
+    /// minimised child viewport — Bring All to Front only unhides — so offering
+    /// Minimize from the menu would be a one-way door out of the app.
+    #[test]
+    fn the_window_menu_offers_no_way_to_minimise() {
+        let model = global(&editing());
+        let window = model.menus.iter().find(|m| m.title == "Window").unwrap();
+        for entry in &window.entries {
+            if let MenuEntry::Item(item) = entry {
+                assert!(
+                    !matches!(item.command, MenuCommand::Predefined(_)),
+                    "{:?} is an OS-handled item the app cannot undo",
+                    item.label
+                );
+            }
+        }
     }
 
     #[test]

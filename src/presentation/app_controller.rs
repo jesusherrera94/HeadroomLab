@@ -99,6 +99,9 @@ pub struct HeadroomApp {
     /// The macOS menu bar. `None` off macOS, where each window draws its own.
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::presentation::native_menu::NativeMenu>,
+    /// Whether the code area held keyboard focus at the end of the last frame.
+    /// Sampled inside the Editor's viewport, since focus is per-viewport.
+    code_area_focused: bool,
     /// Last sampled clipboard state, for the Edit menu's Paste item, and when it
     /// was taken.
     clipboard_ready: bool,
@@ -146,9 +149,50 @@ impl HeadroomApp {
             about_open: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
+            code_area_focused: false,
             clipboard_ready: false,
             clipboard_checked: Instant::now() - CLIPBOARD_POLL,
         }
+    }
+
+    /// The viewport the repaint tick is scheduled on: one the user can see, so
+    /// the tick arrives as a wrapped winit event. See `ui` for why that matters.
+    ///
+    /// Prefers the screen's main window, falling back to any other open one if
+    /// that has been minimised — a minimised window is painted through the same
+    /// unwrapped path as a hidden one.
+    fn ticking_viewport(&self, ctx: &egui::Context) -> ViewportId {
+        let preferred = match self.screen {
+            // The root *is* the splash, and it is still visible at this point.
+            Screen::Splash => return ViewportId::ROOT,
+            Screen::Initial => WindowId::Initial,
+            Screen::Editor => WindowId::Editor,
+        };
+
+        let on_screen = |window: WindowId| {
+            !ctx.input_for(Self::viewport_id(window), |input| {
+                input.viewport().minimized.unwrap_or(false)
+            })
+        };
+
+        if on_screen(preferred) {
+            return Self::viewport_id(preferred);
+        }
+        // Minimised. Any other open window will keep the loop fed.
+        let fallback = [
+            (WindowId::Simulator, self.windows.simulator.is_some()),
+            (WindowId::Graph, self.windows.graph.is_some()),
+            (WindowId::Doom, self.windows.doom.is_some()),
+            (WindowId::Initial, self.initial_open),
+        ]
+        .into_iter()
+        .find(|(window, open)| *open && on_screen(*window))
+        .map(|(window, _)| window);
+
+        // With everything minimised the loop falls back to the unwrapped path.
+        // That still runs — it just cannot create a window, which is why
+        // `focus_or_open` un-minimises rather than opening in that state.
+        Self::viewport_id(fallback.unwrap_or(preferred))
     }
 
     // -- Menus -------------------------------------------------------------
@@ -449,7 +493,7 @@ impl HeadroomApp {
         let viewport_id = Self::viewport_id(WindowId::Initial);
         if self.initial.focus_requested {
             self.initial.focus_requested = false;
-            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+            raise(ctx, viewport_id);
         }
 
         // Snapshot the (≤5) recents so the render doesn't hold a borrow across
@@ -585,7 +629,7 @@ impl HeadroomApp {
         let viewport_id = Self::viewport_id(WindowId::Editor);
         if state.focus_requested {
             state.focus_requested = false;
-            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+            raise(ctx, viewport_id);
         }
 
         let title = editor_title(state);
@@ -594,6 +638,7 @@ impl HeadroomApp {
         let mut menu_command = None;
         let about_open = self.about_open;
         let mut about_dismissed = false;
+        let mut code_area_focused = false;
 
         ctx.show_viewport_immediate(
             viewport_id,
@@ -609,6 +654,14 @@ impl HeadroomApp {
                 if about_open {
                     about_dismissed = about_dialog(ui.ctx());
                 }
+
+                // Sampled here, inside the Editor's viewport, because focus is
+                // per-viewport — see `menu_context`.
+                code_area_focused = state
+                    .tabs
+                    .get(state.active_tab)
+                    .map(|tab| code_pane::editor_id(tab.id))
+                    .is_some_and(|id| ui.ctx().memory(|memory| memory.has_focus(id)));
 
                 // Tabs that went away this frame — closed, or pruned by the
                 // watcher — release their cursor, scroll and undo history here.
@@ -628,6 +681,7 @@ impl HeadroomApp {
             },
         );
 
+        self.code_area_focused = code_area_focused;
         if about_dismissed {
             self.about_open = false;
         }
@@ -775,7 +829,7 @@ impl HeadroomApp {
         let viewport_id = Self::viewport_id(WindowId::Simulator);
         if state.focus_requested {
             state.focus_requested = false;
-            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+            raise(ctx, viewport_id);
         }
 
         let title = window_title(self.current_project.as_ref(), "Hardware Simulator");
@@ -828,7 +882,7 @@ impl HeadroomApp {
         let viewport_id = Self::viewport_id(WindowId::Doom);
         if state.focus_requested {
             state.focus_requested = false;
-            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+            raise(ctx, viewport_id);
         }
 
         let mut close_requested = false;
@@ -861,7 +915,7 @@ impl HeadroomApp {
         let viewport_id = Self::viewport_id(WindowId::Graph);
         if session.focus_requested {
             session.focus_requested = false;
-            ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
+            raise(ctx, viewport_id);
         }
 
         let title = window_title(self.current_project.as_ref(), "Signal Graph");
@@ -910,9 +964,23 @@ fn effect_dylib_path(project: &RecentProject) -> Option<PathBuf> {
 impl eframe::App for HeadroomApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // Keeps the splash timer, playhead and graph worker ticking with no
-        // user input.
-        ctx.request_repaint_after(TICK_INTERVAL);
+        // Keeps the splash timer, playhead and graph worker ticking with no user
+        // input — scheduled on a window that is actually **on screen**, never on
+        // the hidden root.
+        //
+        // eframe paints an invisible or minimised window by calling
+        // `run_ui_and_paint` straight from `new_events` (`run.rs:222`) — the one
+        // handler it does not wrap in `with_event_loop_context`. A tick scheduled
+        // on the hidden root therefore produces a frame with no event-loop
+        // thread-local, and on such a frame `show_viewport_immediate` cannot
+        // create its window (`wgpu_integration.rs:1081`) and egui asserts with
+        // "the user callback was never called". That is the crash class
+        // `prepare_simulator` works around for one case; scheduling the tick on a
+        // visible viewport removes it for all of them, because the tick then
+        // arrives as `window.request_redraw()` → `RedrawRequested` →
+        // `window_event`, which *is* wrapped. Immediate viewports all repaint in
+        // one pass, so a single visible window keeps the whole tree ticking.
+        ctx.request_repaint_after_for(TICK_INTERVAL, self.ticking_viewport(&ctx));
 
         // One context per frame, shared by the native bar, every per-window bar
         // and the close handling — so all of them agree on what has focus and
@@ -952,6 +1020,17 @@ impl eframe::App for HeadroomApp {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
     }
+}
+
+/// Brings a viewport to the front, **un-minimising it first**.
+///
+/// `Focus` alone does not restore a minimised window, and with the root hidden
+/// there is no Dock icon to click and no Bring All to Front to fall back on — so
+/// a window minimised from its title bar would otherwise be gone for good. The
+/// Window menu is the way back, and this is what makes it work.
+fn raise(ctx: &egui::Context, viewport_id: ViewportId) {
+    ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd_to(viewport_id, ViewportCommand::Focus);
 }
 
 /// Whether ⌘W / Ctrl+W was pressed in a secondary window, which closes it (D5).

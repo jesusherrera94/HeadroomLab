@@ -170,10 +170,6 @@ fn predefined(which: PredefinedItem, item: &ModelItem) -> PredefinedMenuItem {
         PredefinedItem::Hide => PredefinedMenuItem::hide(text),
         PredefinedItem::HideOthers => PredefinedMenuItem::hide_others(text),
         PredefinedItem::ShowAll => PredefinedMenuItem::show_all(text),
-        PredefinedItem::Minimize => PredefinedMenuItem::minimize(text),
-        // macOS's "Zoom" is the green-button behaviour, which is `maximize`.
-        PredefinedItem::Zoom => PredefinedMenuItem::maximize(text),
-        PredefinedItem::BringAllToFront => PredefinedMenuItem::bring_all_to_front(text),
     }
 }
 

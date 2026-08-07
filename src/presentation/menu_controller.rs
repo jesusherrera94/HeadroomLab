@@ -228,10 +228,7 @@ mod tests {
 
     #[test]
     fn predefined_items_do_nothing_here() {
-        let requests = dispatch(
-            MenuCommand::Predefined(menu::PredefinedItem::Minimize),
-            None,
-        );
+        let requests = dispatch(MenuCommand::Predefined(menu::PredefinedItem::Hide), None);
         assert!(!requests.quit);
         assert!(!requests.close_window);
         assert!(requests.focus_window.is_none());
@@ -282,7 +279,6 @@ mod tests {
             menu::QUIT,
             menu::HIDE,
             menu::HIDE_OTHERS,
-            menu::MINIMIZE,
             menu::BUILD_RUN,
             menu::COMPILE,
             menu::PLAY_PAUSE,
