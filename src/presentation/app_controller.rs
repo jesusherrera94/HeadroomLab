@@ -99,9 +99,10 @@ pub struct HeadroomApp {
     /// The macOS menu bar. `None` off macOS, where each window draws its own.
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::presentation::native_menu::NativeMenu>,
-    /// Whether the code area held keyboard focus at the end of the last frame.
-    /// Sampled inside the Editor's viewport, since focus is per-viewport.
-    code_area_focused: bool,
+    /// Whether a widget other than the code area held keyboard focus at the end
+    /// of the last frame. Sampled inside the Editor's viewport, since focus is
+    /// per-viewport.
+    other_widget_focused: bool,
     /// Last sampled clipboard state, for the Edit menu's Paste item, and when it
     /// was taken.
     clipboard_ready: bool,
@@ -149,7 +150,7 @@ impl HeadroomApp {
             about_open: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
-            code_area_focused: false,
+            other_widget_focused: false,
             clipboard_ready: false,
             clipboard_checked: Instant::now() - CLIPBOARD_POLL,
         }
@@ -638,7 +639,7 @@ impl HeadroomApp {
         let mut menu_command = None;
         let about_open = self.about_open;
         let mut about_dismissed = false;
-        let mut code_area_focused = false;
+        let mut other_widget_focused = false;
 
         ctx.show_viewport_immediate(
             viewport_id,
@@ -656,12 +657,17 @@ impl HeadroomApp {
                 }
 
                 // Sampled here, inside the Editor's viewport, because focus is
-                // per-viewport — see `menu_context`.
-                code_area_focused = state
+                // per-viewport — see `menu_context`. Anything focused that is not
+                // the active buffer is a field with its own claim on ⌘C / ⌘V /
+                // ⌘A; nothing focused leaves the Edit menu live.
+                let code_area = state
                     .tabs
                     .get(state.active_tab)
-                    .map(|tab| code_pane::editor_id(tab.id))
-                    .is_some_and(|id| ui.ctx().memory(|memory| memory.has_focus(id)));
+                    .map(|tab| code_pane::editor_id(tab.id));
+                other_widget_focused = ui
+                    .ctx()
+                    .memory(|memory| memory.focused())
+                    .is_some_and(|focused| Some(focused) != code_area);
 
                 // Tabs that went away this frame — closed, or pruned by the
                 // watcher — release their cursor, scroll and undo history here.
@@ -681,7 +687,7 @@ impl HeadroomApp {
             },
         );
 
-        self.code_area_focused = code_area_focused;
+        self.other_widget_focused = other_widget_focused;
         if about_dismissed {
             self.about_open = false;
         }

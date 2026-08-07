@@ -313,17 +313,23 @@ pub struct MenuContext {
     /// Labels for the Open Recent submenu, in `RecentProjectsService` order.
     pub recents: Vec<String>,
 
-    /// Whether the code area itself holds keyboard focus.
+    /// Whether some widget *other than the code area* holds keyboard focus —
+    /// the terminal, the find bar's query box, an inline rename in the explorer.
     ///
-    /// The Edit menu stands down unless it does. On macOS an enabled item's
+    /// The Edit menu stands down while one does. On macOS an enabled item's
     /// accelerator is consumed by the menu *before* the window sees the key, so
     /// an Edit menu that stayed live regardless of focus would swallow `⌘C`,
-    /// `⌘V` and `⌘A` from every other field in the window — the terminal (whose
-    /// copy binding is `⌘C`, because a bare `Ctrl+C` has to stay SIGINT), the
-    /// find bar's query box, and the explorer's inline rename — and apply them
-    /// to the buffer behind them instead. This is the same rule macOS applies
-    /// through the responder chain, which an egui-painted window cannot use.
-    pub code_area_focused: bool,
+    /// `⌘V` and `⌘A` from those fields — the terminal especially, whose copy
+    /// binding is `⌘C` because a bare `Ctrl+C` has to stay SIGINT — and apply
+    /// them to the buffer behind them instead. This is the rule macOS gets from
+    /// the responder chain, which an egui-painted window cannot use.
+    ///
+    /// Note the polarity: focus on *nothing* leaves the menu live. egui only
+    /// reports a focused widget once one has been clicked into, so requiring the
+    /// code area to hold focus would leave the whole Edit menu grey until the
+    /// user happened to click in the text — which is not how an editor behaves,
+    /// and not what the responder chain does either.
+    pub other_widget_focused: bool,
 
     pub has_open_tab: bool,
     /// False for binary/oversized buffers, which are shown but never edited.
@@ -351,7 +357,7 @@ impl Default for MenuContext {
             focused: WindowId::Splash,
             has_project: false,
             recents: Vec::new(),
-            code_area_focused: false,
+            other_widget_focused: false,
             has_open_tab: false,
             active_tab_editable: false,
             active_tab_dirty: false,
@@ -613,7 +619,7 @@ fn edit_menu(ctx: &MenuContext) -> Menu {
     // The Edit menu acts on the code area, so it needs the Editor focused with
     // something open in it. Mutating commands additionally need a buffer that is
     // editable at all — binary and oversized documents are shown, never written.
-    let base = ctx.focused == WindowId::Editor && ctx.has_open_tab && ctx.code_area_focused;
+    let base = ctx.focused == WindowId::Editor && ctx.has_open_tab && !ctx.other_widget_focused;
     let writable = base && ctx.active_tab_editable;
 
     let edit = |label: &str, command: EditorCommand, enabled: bool| {
@@ -765,7 +771,6 @@ mod tests {
             has_open_tab: true,
             active_tab_editable: true,
             can_comment: true,
-            code_area_focused: true,
             ..MenuContext::default()
         }
     }
@@ -904,31 +909,53 @@ mod tests {
     }
 
     /// On macOS an enabled item's accelerator is consumed by the menu before the
-    /// window sees the key, so the Edit menu may only be live when the code area
-    /// is what the keystroke would otherwise reach. Anything else — the terminal,
-    /// the find bar, an inline rename — must get its own `⌘C` / `⌘V` / `⌘A`.
+    /// window sees the key, so the Edit menu must stand down while another text
+    /// field — the terminal, the find bar, an inline rename — would otherwise
+    /// receive `⌘C` / `⌘V` / `⌘A`.
     #[test]
-    fn the_edit_menu_stands_down_unless_the_code_area_has_focus() {
-        let model = global(&MenuContext {
-            code_area_focused: false,
+    fn the_edit_menu_stands_down_while_another_widget_has_focus() {
+        let taken = global(&MenuContext {
+            other_widget_focused: true,
             has_selection: true,
             can_paste: true,
             ..editing()
         });
-        assert!(!model.is_enabled(MenuCommand::Edit(EditorCommand::Copy)));
-        assert!(!model.is_enabled(MenuCommand::Edit(EditorCommand::Cut)));
-        assert!(!model.is_enabled(MenuCommand::Edit(EditorCommand::Paste)));
-        assert!(!model.is_enabled(MenuCommand::Edit(EditorCommand::SelectAll)));
-        assert!(!model.is_enabled(MenuCommand::Find));
+        assert!(!taken.is_enabled(MenuCommand::Edit(EditorCommand::Copy)));
+        assert!(!taken.is_enabled(MenuCommand::Edit(EditorCommand::Cut)));
+        assert!(!taken.is_enabled(MenuCommand::Edit(EditorCommand::Paste)));
+        assert!(!taken.is_enabled(MenuCommand::Edit(EditorCommand::SelectAll)));
+        assert!(!taken.is_enabled(MenuCommand::Find));
 
         // Saving is deliberately not focus-dependent: "save my work" must not
         // depend on where the caret happens to be.
         let dirty = global(&MenuContext {
-            code_area_focused: false,
+            other_widget_focused: true,
             active_tab_dirty: true,
             ..editing()
         });
         assert!(dirty.is_enabled(MenuCommand::Save));
+    }
+
+    /// The polarity that the first attempt at this got backwards: with nothing
+    /// focused there is no competing field to steal from, and the code area is
+    /// the obvious target — so the Edit menu is live. egui reports no focused
+    /// widget until one is clicked into, so the stricter rule left the entire
+    /// Edit menu grey on a freshly opened project.
+    #[test]
+    fn the_edit_menu_is_live_when_nothing_else_holds_focus() {
+        let model = global(&MenuContext {
+            other_widget_focused: false,
+            has_selection: true,
+            can_paste: true,
+            ..editing()
+        });
+        assert!(model.is_enabled(MenuCommand::Edit(EditorCommand::Copy)));
+        assert!(model.is_enabled(MenuCommand::Edit(EditorCommand::Cut)));
+        assert!(model.is_enabled(MenuCommand::Edit(EditorCommand::Paste)));
+        assert!(model.is_enabled(MenuCommand::Edit(EditorCommand::SelectAll)));
+        assert!(model.is_enabled(MenuCommand::Edit(EditorCommand::Undo)));
+        assert!(model.is_enabled(MenuCommand::Edit(EditorCommand::ToggleComment)));
+        assert!(model.is_enabled(MenuCommand::Find));
     }
 
     /// D5: ⌘W closes the tab in the Editor and the window everywhere else, so
