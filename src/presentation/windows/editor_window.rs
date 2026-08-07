@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
+use crate::domain::menu;
 use crate::presentation::components::molecules::confirm_modal::{
     ConfirmModalContent, confirm_modal,
 };
@@ -19,36 +20,47 @@ use crate::presentation::components::organisms::problems_strip;
 use crate::presentation::components::organisms::status_bar::{StatusInfo, status_bar};
 use crate::presentation::components::organisms::terminal_panel;
 use crate::presentation::editor_controller::{self, EditorState, EditorViewEvents};
-
-/// Cmd+S / Ctrl+S — save the active buffer.
-const SAVE: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
-/// Cmd+Shift+S / Ctrl+Shift+S — save every dirty buffer.
-const SAVE_ALL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
-    egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT),
-    egui::Key::S,
-);
-/// Cmd+F / Ctrl+F — find in the active buffer.
-const FIND: egui::KeyboardShortcut =
-    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::F);
+use crate::presentation::menu_controller;
 
 pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
     let mut events = EditorViewEvents::default();
+
+    // Every chord comes from the one table in `domain::menu`, so the shortcut a
+    // menu item advertises is by construction the shortcut that fires here.
+    let save = menu_controller::shortcut(menu::SAVE);
+    let save_all = menu_controller::shortcut(menu::SAVE_ALL);
+    let find = menu_controller::shortcut(menu::FIND);
+    let close_tab = menu_controller::shortcut(menu::CLOSE_TAB);
+    let close_window = menu_controller::shortcut(menu::CLOSE_WINDOW);
+    let quit = menu_controller::shortcut(menu::QUIT);
 
     // Consume the editor shortcuts before any widget sees the keys. Save-all is
     // checked first: it also matches the plain save shortcut's key.
     //
     // While the terminal has focus it gets every key it can use, so ⌘F reaches
     // a shell program that wants it. Save is the exception: "save my work" must
-    // not depend on where the caret happens to be, so it stays global.
+    // not depend on where the caret happens to be, so it stays global — and so
+    // are the three that end something, for the same reason.
     let terminal_focused = terminal_panel::has_focus(ui.ctx());
     ui.input_mut(|input| {
-        events.code.save_all = input.consume_shortcut(&SAVE_ALL);
-        events.code.save = !events.code.save_all && input.consume_shortcut(&SAVE);
+        events.code.save_all = input.consume_shortcut(&save_all);
+        events.code.save = !events.code.save_all && input.consume_shortcut(&save);
+        // ⇧⌘W before ⌘W: the two share a key, and the wider chord wins.
+        let window = input.consume_shortcut(&close_window);
+        events.quit_requested = window | input.consume_shortcut(&quit);
+        events.close_active_tab = !window && input.consume_shortcut(&close_tab);
         if !terminal_focused {
-            events.code.open_find = input.consume_shortcut(&FIND);
+            events.code.open_find = input.consume_shortcut(&find);
         }
     });
+
+    // One queued menu command per frame — all the code area can apply in a
+    // single pass over the buffer. Anything still waiting earns another frame
+    // now rather than trickling out at the repaint tick.
+    let injected = editor_controller::take_pending_command(state);
+    if editor_controller::has_pending_commands(state) {
+        ui.ctx().request_repaint();
+    }
 
     // Toolbar (full-width, top).
     egui::Panel::top("editor_toolbar").show(ui, |ui| {
@@ -223,6 +235,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
                 clipboard.as_ref(),
                 &mine,
                 stale,
+                injected,
             );
             events.code.edited = pane.edited;
             events.code.reload = pane.reload;

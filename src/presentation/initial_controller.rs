@@ -43,6 +43,12 @@ impl InitialState {
         self.modal_open = true;
     }
 
+    /// Opens the Create modal from outside the window — File ▸ New Project…,
+    /// which lands on this screen with the modal already up.
+    pub fn open_create_modal(&mut self) {
+        self.open_modal();
+    }
+
     /// Closes the Create modal (called by the app controller on Cancel or a
     /// successful generation).
     pub fn close_modal(&mut self) {

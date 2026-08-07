@@ -19,7 +19,7 @@
 //!   stored index silently retargets and would discard the wrong buffer.
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
@@ -29,6 +29,7 @@ use crate::application::ports::{
     ClipboardPort, DirEntryInfo, FileWatchSession, FileWatcherPort, ProjectFileSystemPort,
     TerminalPort,
 };
+use crate::domain::editing::EditorCommand;
 use crate::domain::file_system::FileSystemError;
 use crate::domain::project::RecentProject;
 use crate::domain::text_document::{DocumentContent, Language, language_for};
@@ -478,6 +479,17 @@ pub enum ConfirmChoice {
     Alternate,
 }
 
+/// What answering a confirmation asks the app to do next. Both fields are
+/// app-controller business: the controller itself never closes a window or tears
+/// a project down.
+#[derive(Default)]
+pub struct ConfirmOutcome {
+    /// A quit was confirmed — let the window close.
+    pub quit: bool,
+    /// A project switch was confirmed — rebuild the Editor on this project.
+    pub switch_to: Option<RecentProject>,
+}
+
 /// A deferred, confirmation-gated action.
 ///
 /// The tab is named by [`TabId`] rather than by position precisely because this
@@ -489,6 +501,10 @@ pub enum EditorAction {
     CloseTab(TabId),
     /// Quit with unsaved buffers open.
     Quit,
+    /// Leave this project for another one with unsaved buffers open. Carries the
+    /// destination, because by the time the user answers the modal the menu click
+    /// that chose it is long gone.
+    SwitchProject(RecentProject),
 }
 
 /// Transient explorer interaction state (inline editors, modal, error banner).
@@ -533,6 +549,11 @@ pub struct EditorState {
     /// dies with the project rather than outliving it.
     pub terminal: TerminalState,
     pub focus_requested: bool,
+    /// Edit commands raised by the menu bar, waiting for the code area to run
+    /// them. A queue rather than a slot so a burst of menu events cannot lose
+    /// one; the view takes a single command per frame, which is all the code
+    /// editor can apply in one pass over the buffer.
+    pending_commands: VecDeque<EditorCommand>,
 }
 
 impl EditorState {
@@ -578,6 +599,7 @@ impl EditorState {
                 &project.path,
             ),
             focus_requested: false,
+            pending_commands: VecDeque::new(),
         }
     }
 
@@ -723,6 +745,11 @@ pub struct EditorViewEvents {
     pub confirm_alternate: bool,
     pub confirm_cancelled: bool,
     pub error_dismissed: bool,
+    /// ⌘W — close the active tab, prompting when its buffer is dirty.
+    pub close_active_tab: bool,
+    /// ⇧⌘W or ⌘Q. Closing the Editor *is* quitting, so both take the same route
+    /// as the window's close button: through the unsaved-work guard.
+    pub quit_requested: bool,
 }
 
 /// Follow-up actions the app must perform after handling the frame's events.
@@ -741,6 +768,11 @@ pub struct EditorRequests {
     pub compile: bool,
     /// A quit was confirmed despite unsaved buffers — let the close through.
     pub quit_confirmed: bool,
+    /// ⇧⌘W or ⌘Q was pressed. The app controller raises the guard and closes.
+    pub quit_requested: bool,
+    /// A project switch was confirmed (or needed no confirming): rebuild the
+    /// Editor on this project.
+    pub switch_project: Option<RecentProject>,
 }
 
 /// Drains the filesystem watcher and refreshes any loaded directory that
@@ -836,15 +868,19 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
         state.explorer.error = Some(e.to_string());
     }
 
+    if events.close_active_tab {
+        close_active_tab(state);
+    }
+
     let open_doom = handle_explorer(state, events.explorer);
     handle_code(state, events.code);
 
-    let mut quit_confirmed = false;
+    let mut confirmed = ConfirmOutcome::default();
     if events.confirm_confirmed {
-        quit_confirmed = run_pending_confirm(state, ConfirmChoice::Primary);
+        confirmed = run_pending_confirm(state, ConfirmChoice::Primary);
     }
     if events.confirm_alternate {
-        quit_confirmed = run_pending_confirm(state, ConfirmChoice::Alternate);
+        confirmed = run_pending_confirm(state, ConfirmChoice::Alternate);
     }
     if events.confirm_cancelled {
         state.explorer.pending_confirm = None;
@@ -860,7 +896,9 @@ pub fn handle_events(state: &mut EditorState, events: EditorViewEvents) -> Edito
         build_failed: events.build_failed,
         build_run: events.build_run,
         compile: events.compile,
-        quit_confirmed,
+        quit_confirmed: confirmed.quit,
+        quit_requested: events.quit_requested,
+        switch_project: confirmed.switch_to,
     }
 }
 
@@ -954,6 +992,95 @@ fn reload_active(state: &mut EditorState) {
 /// True when any open buffer has unsaved changes — the quit guard's condition.
 pub fn has_unsaved_work(state: &EditorState) -> bool {
     state.tabs.iter().any(EditorTab::unsaved)
+}
+
+/// Starts an inline "new entry" row for the menu's File ▸ New File / New Folder.
+///
+/// The explorer's own items create inside the folder that was right-clicked; the
+/// menu has no such anchor, so it uses the current selection — the directory
+/// itself when one is selected, otherwise the selected file's parent, falling
+/// back to the project root.
+pub fn begin_create_at_selection(state: &mut EditorState, kind: EntryKind) {
+    let root = state.tree.root.path.clone();
+    let parent = match state.tree.selected.as_deref() {
+        Some(path) if find_dir_mut(&mut state.tree.root, path).is_some() => path.to_path_buf(),
+        Some(path) => path.parent().map(Path::to_path_buf).unwrap_or(root),
+        None => root,
+    };
+    state.explorer.pending_rename = None;
+    state.explorer.pending_create = Some(PendingCreate {
+        parent,
+        kind,
+        buffer: String::new(),
+        focus: true,
+    });
+}
+
+/// Opens the find bar on the active buffer, if it has one that can be searched.
+pub fn open_find(state: &mut EditorState) {
+    if let Some(tab) = state.tabs.get_mut(state.active_tab)
+        && tab.content.is_editable()
+    {
+        tab.find = Some(FindState::default());
+    }
+}
+
+/// Writes the active buffer to disk (File ▸ Save).
+pub fn save_active_tab(state: &mut EditorState) {
+    save_active(state);
+}
+
+/// Writes every dirty buffer to disk (File ▸ Save All).
+pub fn save_all_tabs(state: &mut EditorState) {
+    save_all(state);
+}
+
+/// Queues an edit command raised by the menu bar. The code area runs it on the
+/// next frame through the very same path a key chord takes.
+pub fn queue_command(state: &mut EditorState, command: EditorCommand) {
+    state.pending_commands.push_back(command);
+}
+
+/// Takes the next queued menu command, for the view to hand to the code area.
+pub fn take_pending_command(state: &mut EditorState) -> Option<EditorCommand> {
+    state.pending_commands.pop_front()
+}
+
+/// Whether more commands are still queued, so the view can ask for another frame
+/// rather than let them trickle out at the repaint tick.
+pub fn has_pending_commands(state: &EditorState) -> bool {
+    !state.pending_commands.is_empty()
+}
+
+/// Closes the active tab, routing through the confirmation when it is dirty.
+/// Does nothing when no tab is open.
+pub fn close_active_tab(state: &mut EditorState) {
+    if let Some(tab) = state.tabs.get(state.active_tab) {
+        request_close_tab(state, tab.id);
+    }
+}
+
+/// Raises the confirmation for leaving this project with unsaved buffers open.
+/// Returns false when there is nothing to guard, in which case the caller may
+/// switch immediately.
+pub fn request_switch_project(state: &mut EditorState, project: RecentProject) -> bool {
+    if !has_unsaved_work(state) {
+        return false;
+    }
+    let count = state.tabs.iter().filter(|t| t.unsaved()).count();
+    let message = if count == 1 {
+        "1 file has unsaved changes. Save before opening another project?".to_owned()
+    } else {
+        format!("{count} files have unsaved changes. Save before opening another project?")
+    };
+    state.explorer.pending_confirm = Some(PendingConfirm {
+        title: "Unsaved changes".to_string(),
+        message,
+        confirm_label: "Discard & open".to_string(),
+        alternate_label: Some("Save all & open".to_string()),
+        action: EditorAction::SwitchProject(project),
+    });
+    true
 }
 
 /// Raises the quit confirmation. Returns false when there is nothing to guard,
@@ -1123,9 +1250,9 @@ fn request_delete(state: &mut EditorState, path: &Path) {
 
 /// Runs the pending confirmation. Returns true when a quit was approved, so the
 /// caller can let the window close.
-fn run_pending_confirm(state: &mut EditorState, choice: ConfirmChoice) -> bool {
+fn run_pending_confirm(state: &mut EditorState, choice: ConfirmChoice) -> ConfirmOutcome {
     let Some(confirm) = state.explorer.pending_confirm.take() else {
-        return false;
+        return ConfirmOutcome::default();
     };
     match confirm.action {
         EditorAction::Delete(path) => {
@@ -1138,32 +1265,49 @@ fn run_pending_confirm(state: &mut EditorState, choice: ConfirmChoice) -> bool {
                 }
                 Err(e) => state.explorer.error = Some(e.to_string()),
             }
-            false
+            ConfirmOutcome::default()
         }
         EditorAction::CloseTab(id) => {
             // Resolved now, not when the confirmation was raised: the strip may
             // have been reordered or pruned while the modal was up. A tab that
             // has since gone away needs no closing.
             let Some(index) = state.index_of(id) else {
-                return false;
+                return ConfirmOutcome::default();
             };
             // "Save" must not close a tab whose write failed — the error banner
             // is shown and the buffer stays open and dirty.
             if choice == ConfirmChoice::Alternate && !save_tab(state, index) {
-                return false;
+                return ConfirmOutcome::default();
             }
             close_tab(state, index);
-            false
+            ConfirmOutcome::default()
         }
         EditorAction::Quit => {
             if choice == ConfirmChoice::Alternate {
                 save_all(state);
                 // Any write that failed left its buffer dirty; don't quit over it.
                 if has_unsaved_work(state) {
-                    return false;
+                    return ConfirmOutcome::default();
                 }
             }
-            true
+            ConfirmOutcome {
+                quit: true,
+                switch_to: None,
+            }
+        }
+        EditorAction::SwitchProject(project) => {
+            if choice == ConfirmChoice::Alternate {
+                save_all(state);
+                // Same rule as quitting: a failed write keeps its buffer dirty,
+                // and tearing the project down would take it with us.
+                if has_unsaved_work(state) {
+                    return ConfirmOutcome::default();
+                }
+            }
+            ConfirmOutcome {
+                quit: false,
+                switch_to: Some(project),
+            }
         }
     }
 }
@@ -1560,6 +1704,7 @@ mod tests {
             fs_service,
             clipboard: Rc::new(FakeClipboard),
             watch: None,
+            pending_commands: VecDeque::new(),
             tree: FileTreeState {
                 root: TreeNode {
                     name: "proj".into(),
@@ -1796,7 +1941,7 @@ mod tests {
         assert!(state.explorer.pending_confirm.is_some());
 
         // "Save all & quit" persists first, then approves the quit.
-        assert!(run_pending_confirm(&mut state, ConfirmChoice::Alternate));
+        assert!(run_pending_confirm(&mut state, ConfirmChoice::Alternate).quit);
         assert_eq!(fs.read_file(&path).unwrap(), b"two\n".to_vec());
         assert!(!has_unsaved_work(&state));
     }

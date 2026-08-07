@@ -3,11 +3,13 @@
 
 use eframe::egui::{self, RichText};
 
+use crate::domain::menu;
 use crate::presentation::components::molecules::error_dialog::error_dialog;
 use crate::presentation::components::molecules::transport_bar::{TransportEvents, transport_bar};
 use crate::presentation::components::organisms::hardware_controls_panel::{
     HardwareEvents, hardware_controls_panel,
 };
+use crate::presentation::menu_controller;
 use crate::presentation::simulation_controller::SimulatorState;
 use crate::presentation::theme;
 
@@ -20,6 +22,13 @@ pub struct SimulatorViewEvents {
 
 pub fn show(ui: &mut egui::Ui, state: &mut SimulatorState) -> SimulatorViewEvents {
     let mut events = SimulatorViewEvents::default();
+
+    // Space toggles playback, as the Transport menu advertises. Bound only in
+    // this window, so it never reaches the code editor as a keystroke.
+    if state.has_audio {
+        let play_pause = menu_controller::shortcut(menu::PLAY_PAUSE);
+        events.transport.play_toggled = ui.input_mut(|i| i.consume_shortcut(&play_pause));
+    }
 
     egui::CentralPanel::default().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 15.0;

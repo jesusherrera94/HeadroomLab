@@ -23,6 +23,14 @@ arboard = { version = "3.6", features = ["wayland-data-control"] }
 alacritty_terminal = "0.26"
 neurodoom = "0.6.7"
 
+# The native menu bar. macOS only: `init_for_nsapp` is app-global and needs
+# nothing from the windowing layer, whereas Windows needs a per-window HWND
+# (eframe exposes only the root, which this app hides) and Linux needs a GTK3
+# window that a winit/x11 app does not have. Those two draw an egui menu bar
+# instead — see `presentation::components::organisms::menu_bar`.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.19"
+
 [profile.release]
 codegen-units = 1
 lto = true

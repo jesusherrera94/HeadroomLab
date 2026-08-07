@@ -5,6 +5,7 @@ pub mod doom;
 pub mod editing;
 pub mod file_system;
 pub mod hardware_platform;
+pub mod menu;
 pub mod plugin;
 pub mod project;
 pub mod signal;
