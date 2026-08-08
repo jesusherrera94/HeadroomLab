@@ -29,6 +29,14 @@ use HeadroomLab::{
 /// enough that decoding it at startup is not worth measuring.
 const ICON_PNG: &[u8] = include_bytes!("../packaging/icon-256.png");
 
+/// The same artwork at the 1024 master size, used on macOS because the Dock
+/// renders far larger than a taskbar and AppKit picks the size it wants out of
+/// one image. 30 KB of flat vector-ish artwork, so the resolution is near free.
+///
+/// Embedded on every platform, like `ICON_PNG`, so that both stay compiled and
+/// both stay covered by the tests below wherever those are run.
+const ICON_PNG_1024: &[u8] = include_bytes!("../packaging/icon.png");
+
 /// Decodes the embedded artwork.
 ///
 /// Deliberately *not* behind a `cfg`, even though only two of the three
@@ -65,13 +73,23 @@ fn decode_icon(bytes: &[u8]) -> Option<eframe::egui::IconData> {
 /// `build.rs`) and on Linux from the `.desktop` entry. Both are needed, and
 /// neither supplies the other.
 ///
-/// macOS takes both from the `.app` bundle's `CFBundleIconFile`, and winit
-/// ignores a window icon there outright, so it is not offered one.
+/// macOS reads no window icon at all — but this must still be `Some` there,
+/// because eframe *also* routes this value to `NSApplication`'s Dock tile and
+/// substitutes **its own egui logo** for a `None` (see
+/// `eframe::native::epi_integration`, which calls `load_default_egui_icon`).
+/// That substitution happens on the first frame, so handing it nothing does not
+/// leave the bundle's `CFBundleIconFile` alone: it briefly shows, then the egui
+/// hexagon replaces it. Passing the artwork here is what makes the Dock tile
+/// ours, and it covers the unbundled `cargo run` case that has no
+/// `CFBundleIconFile` to begin with.
 fn app_icon() -> Option<eframe::egui::IconData> {
-    if cfg!(target_os = "macos") {
-        return None;
-    }
-    decode_icon(ICON_PNG)
+    // `cfg!` rather than `#[cfg]`: the Dock draws much larger than any taskbar,
+    // so macOS gets the master, but both arms keep compiling everywhere.
+    decode_icon(if cfg!(target_os = "macos") {
+        ICON_PNG_1024
+    } else {
+        ICON_PNG
+    })
 }
 
 fn main() -> eframe::Result<()> {
@@ -160,6 +178,19 @@ mod tests {
         assert!(
             icon.rgba.chunks_exact(4).any(|px| px[3] > 0),
             "the icon is entirely transparent"
+        );
+    }
+
+    /// The macOS Dock tile comes from the master, and it reaches AppKit through
+    /// the same decoder — so it needs the same guarantee.
+    #[test]
+    fn the_embedded_master_decodes_to_1024_square_rgba() {
+        let icon = decode_icon(ICON_PNG_1024).expect("the committed master should decode");
+        assert_eq!((icon.width, icon.height), (1024, 1024));
+        assert_eq!(icon.rgba.len(), 1024 * 1024 * 4);
+        assert!(
+            icon.rgba.chunks_exact(4).any(|px| px[3] > 0),
+            "the master icon is entirely transparent"
         );
     }
 
