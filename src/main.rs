@@ -38,7 +38,10 @@ const ICON_PNG: &[u8] = include_bytes!("../packaging/icon-256.png");
 fn decode_icon(bytes: &[u8]) -> Option<eframe::egui::IconData> {
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().ok()?;
-    let mut rgba = vec![0; reader.output_buffer_size()?];
+    // Annotated rather than inferred: the element type would otherwise be
+    // deduced from `next_frame` below, which makes the whole function's types
+    // collapse the moment `png` fails to resolve.
+    let mut rgba: Vec<u8> = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut rgba).ok()?;
 
     // eframe wants straight RGBA8. The generator writes exactly that, so
