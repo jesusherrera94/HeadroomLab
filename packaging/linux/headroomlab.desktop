@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=HeadroomLab
+GenericName=Guitar Pedal DSP Workbench
+Comment=Audition guitar-pedal DSP effects on real audio
+# Resolved through PATH, so the entry keeps working after the updater replaces
+# the binary in place.
+Exec=HeadroomLab
+# A theme icon *name*, not a path: the loader finds the best size from
+# hicolor/<size>/apps/headroomlab.png. A path here would pin one resolution.
+Icon=headroomlab
+Terminal=false
+Categories=AudioVideo;Audio;Development;
+Keywords=DSP;Audio;Guitar;Effects;Pedal;
+StartupWMClass=HeadroomLab
