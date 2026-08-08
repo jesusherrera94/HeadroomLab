@@ -6,7 +6,7 @@ use eframe::egui;
 
 use crate::application::ports::ClipboardPort;
 use crate::domain::diagnostics::{Diagnostic, Severity, span_in};
-use crate::domain::editing::find_matches;
+use crate::domain::editing::{EditorCommand, find_matches};
 use crate::domain::text_document::DocumentContent;
 use crate::presentation::components::molecules::code_editor::{CodeEditorRequest, code_editor};
 use crate::presentation::components::molecules::code_placeholder::{
@@ -48,6 +48,7 @@ pub fn code_pane(
     clipboard: &dyn ClipboardPort,
     diagnostics: &[Diagnostic],
     stale: bool,
+    injected: Option<EditorCommand>,
 ) -> CodePaneEvents {
     let mut events = CodePaneEvents::default();
 
@@ -148,6 +149,7 @@ pub fn code_pane(
                     match_range,
                     clipboard,
                     squiggles: &squiggles,
+                    injected,
                 },
             );
             events.edited = output.changed;

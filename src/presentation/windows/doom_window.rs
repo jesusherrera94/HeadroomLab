@@ -73,10 +73,8 @@ fn held_controls(ui: &egui::Ui) -> DoomControls {
 /// Uploads this frame's pixels and paints them into the largest 4:3 rect that
 /// fits the panel, letterboxed on black.
 fn paint_frame(ui: &mut egui::Ui, frame: &[u8]) {
-    let image = egui::ColorImage::from_rgba_unmultiplied(
-        [DOOM_SCREEN_WIDTH, DOOM_SCREEN_HEIGHT],
-        frame,
-    );
+    let image =
+        egui::ColorImage::from_rgba_unmultiplied([DOOM_SCREEN_WIDTH, DOOM_SCREEN_HEIGHT], frame);
     let options = egui::TextureOptions::NEAREST;
 
     // The handle lives in egui's own storage rather than in `DoomState`, which
@@ -101,10 +99,8 @@ fn paint_frame(ui: &mut egui::Ui, frame: &[u8]) {
 
     let available = ui.available_rect_before_wrap();
     let scale = (available.width() / 4.0).min(available.height() / 3.0);
-    let rect = egui::Rect::from_center_size(
-        available.center(),
-        egui::vec2(scale * 4.0, scale * 3.0),
-    );
+    let rect =
+        egui::Rect::from_center_size(available.center(), egui::vec2(scale * 4.0, scale * 3.0));
 
     ui.painter().image(
         texture.id(),

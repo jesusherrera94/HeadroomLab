@@ -47,8 +47,15 @@ impl WindowManager {
         }
     }
 
+    /// Closes the simulator **and the graph with it**.
+    ///
+    /// The graph plots the processed signal for the plugin the simulator loaded.
+    /// Left open on its own it would keep showing that signal indefinitely, with
+    /// nothing producing it and no way to refresh it — so the two close as one.
+    /// Dropping the session also shuts its compute worker down.
     pub fn close_simulator(&mut self) {
         self.simulator = None;
+        self.graph = None;
     }
 
     pub fn close_graph(&mut self) {

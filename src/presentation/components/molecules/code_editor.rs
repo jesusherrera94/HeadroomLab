@@ -16,6 +16,7 @@ use eframe::egui::{
 
 use crate::application::ports::ClipboardPort;
 use crate::domain::editing::{self, Edit, EditorCommand};
+use crate::domain::menu;
 use crate::domain::text_document::{
     INDENT, Language, auto_indent_for, closing_pair, dedent, line_col_at, line_comment,
 };
@@ -54,6 +55,10 @@ pub struct CodeEditorRequest<'a> {
     /// once the buffer has been edited: the compiler's line numbers no longer
     /// describe this text.
     pub squiggles: &'a [(Range<usize>, egui::Color32)],
+    /// A command raised by the menu bar this frame. It joins the context menu's
+    /// commands at the same junction, so all three entry points — chord, context
+    /// menu, menu bar — run the one implementation.
+    pub injected: Option<EditorCommand>,
 }
 
 pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEditorOutput {
@@ -66,6 +71,7 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
         match_range,
         clipboard,
         squiggles,
+        injected,
     } = request;
 
     // Rewrite Tab / Enter / opening-pair keys, and run the editor commands,
@@ -127,6 +133,10 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                     let can_paste = ui.data(|data| data.get_temp(paste_id).unwrap_or(false));
                     chosen = editor_menu(ui, text, id, language, can_paste);
                 });
+                // The two menus cannot both fire in one frame: opening either
+                // closes the other. `or` rather than an overwrite so a frame that
+                // merely *paints* an open context menu can't blank an injection.
+                let chosen = chosen.or(injected);
 
                 // Run it here, where the `TextEdit`'s borrow of `text` is over.
                 // Menu items raise the same `EditorCommand`s the key chords do,
@@ -412,7 +422,6 @@ fn editor_menu(
 ) -> Option<EditorCommand> {
     ui.set_min_width(220.0);
 
-    let keys = Shortcuts::for_platform();
     let selection = selection_of(ui, id, text).unwrap_or(0..0);
     let has_selection = !selection.is_empty();
 
@@ -426,12 +435,14 @@ fn editor_menu(
     let undoer = state.undoer();
 
     let mut chosen = None;
-    let mut item = |ui: &mut egui::Ui, enabled, label, shortcut, command| {
+    // The chord comes from the command itself, so this menu and the menu bar
+    // cannot label the same action two different ways.
+    let mut item = |ui: &mut egui::Ui, enabled, label, command| {
         if ui
             .add_enabled(
                 enabled,
                 egui::Button::new(label)
-                    .shortcut_text(shortcut)
+                    .shortcut_text(menu::chord_for(command).to_string())
                     .frame(false),
             )
             .clicked()
@@ -441,89 +452,23 @@ fn editor_menu(
         }
     };
 
-    item(ui, has_selection, "Cut", keys.cut, EditorCommand::Cut);
-    item(ui, has_selection, "Copy", keys.copy, EditorCommand::Copy);
-    item(ui, can_paste, "Paste", keys.paste, EditorCommand::Paste);
+    item(ui, has_selection, "Cut", EditorCommand::Cut);
+    item(ui, has_selection, "Copy", EditorCommand::Copy);
+    item(ui, can_paste, "Paste", EditorCommand::Paste);
     ui.separator();
-    item(
-        ui,
-        undoer.has_undo(&here),
-        "Undo",
-        keys.undo,
-        EditorCommand::Undo,
-    );
-    item(
-        ui,
-        undoer.has_redo(&here),
-        "Redo",
-        keys.redo,
-        EditorCommand::Redo,
-    );
+    item(ui, undoer.has_undo(&here), "Undo", EditorCommand::Undo);
+    item(ui, undoer.has_redo(&here), "Redo", EditorCommand::Redo);
     ui.separator();
-    item(
-        ui,
-        true,
-        "Select Line",
-        keys.select_line,
-        EditorCommand::SelectLine,
-    );
+    item(ui, true, "Select Line", EditorCommand::SelectLine);
     item(
         ui,
         line_comment(language).is_some(),
         "Toggle Comment",
-        keys.comment,
         EditorCommand::ToggleComment,
     );
-    item(
-        ui,
-        true,
-        "Select All",
-        keys.select_all,
-        EditorCommand::SelectAll,
-    );
+    item(ui, true, "Select All", EditorCommand::SelectAll);
 
     chosen
-}
-
-/// How the editor's chords are written for this platform. macOS uses the glyphs;
-/// Windows and Linux share the spelled-out form.
-struct Shortcuts {
-    cut: &'static str,
-    copy: &'static str,
-    paste: &'static str,
-    undo: &'static str,
-    redo: &'static str,
-    select_line: &'static str,
-    comment: &'static str,
-    select_all: &'static str,
-}
-
-impl Shortcuts {
-    fn for_platform() -> Self {
-        if cfg!(target_os = "macos") {
-            Self {
-                cut: "⌘X",
-                copy: "⌘C",
-                paste: "⌘V",
-                undo: "⌘Z",
-                redo: "⇧⌘Z",
-                select_line: "⌘L",
-                comment: "⌘/",
-                select_all: "⌘A",
-            }
-        } else {
-            Self {
-                cut: "Ctrl+X",
-                copy: "Ctrl+C",
-                paste: "Ctrl+V",
-                undo: "Ctrl+Z",
-                redo: "Ctrl+Shift+Z",
-                select_line: "Ctrl+L",
-                comment: "Ctrl+/",
-                select_all: "Ctrl+A",
-            }
-        }
-    }
 }
 
 /// Matches this frame's key events against the editor's command chords, removing

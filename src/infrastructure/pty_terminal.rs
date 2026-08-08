@@ -573,7 +573,10 @@ mod tests {
         // 30 lines into an 8-row grid: 22 of them end up in the scrollback.
         let shell = ShellChoice::new(
             "/bin/sh",
-            &["-c", "i=1; while [ $i -le 30 ]; do echo \"line $i\"; i=$((i+1)); done"],
+            &[
+                "-c",
+                "i=1; while [ $i -le 30 ]; do echo \"line $i\"; i=$((i+1)); done",
+            ],
         );
         let session = terminal
             .open(&shell, Path::new("/"), size(), test_palette())

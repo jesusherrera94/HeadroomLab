@@ -4,6 +4,9 @@ pub mod doom_controller;
 pub mod editor_controller;
 pub mod graph_controller;
 pub mod initial_controller;
+pub mod menu_controller;
+#[cfg(target_os = "macos")]
+pub mod native_menu;
 pub mod simulation_controller;
 pub mod syntax;
 pub mod terminal_controller;

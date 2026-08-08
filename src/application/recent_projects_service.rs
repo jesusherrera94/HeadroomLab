@@ -40,6 +40,15 @@ impl RecentProjectsService {
         }
     }
 
+    /// Empties the list and persists that (File ▸ Open Recent ▸ Clear Menu).
+    /// A save failure is logged, exactly as `record` treats one.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        if let Err(e) = self.store.save(&self.items) {
+            eprintln!("[RecentProjectsService] {e}");
+        }
+    }
+
     /// Dedups (keeping the first/most-recent occurrence) and caps a freshly
     /// loaded list, tolerating a hand-edited or stale file.
     fn normalize(items: &mut Vec<RecentProject>) {
@@ -122,6 +131,20 @@ mod tests {
         }
         assert_eq!(svc.list().len(), 5);
         assert_eq!(svc.list()[0].name, "p7");
+    }
+
+    #[test]
+    fn clear_empties_the_list_and_the_store() {
+        let store = Rc::new(FakeStore::default());
+        let mut svc = RecentProjectsService::new(store.clone());
+        svc.record(proj("a", "/a"));
+        svc.record(proj("b", "/b"));
+
+        svc.clear();
+        assert!(svc.list().is_empty());
+        assert!(store.saved.borrow().is_empty());
+        // And it stays cleared across a reload.
+        assert!(RecentProjectsService::new(store).list().is_empty());
     }
 
     #[test]
