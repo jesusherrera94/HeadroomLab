@@ -22,6 +22,36 @@ egui_extras = { version = "0.35.0", default-features = false, features = ["synte
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 alacritty_terminal = "0.26"
 neurodoom = "0.6.7"
+# The updater. `rustls` rather than the default native-tls so no platform needs
+# an OpenSSL toolchain to build; the archive/compression features cover the
+# `.tar.gz` (macOS, Linux) and `.zip` (Windows) release assets.
+# `reqwest` must be listed explicitly: self_update's `rustls` feature is
+# `["reqwest?/rustls", "ureq?/rustls"]`, which only *configures* a client that is
+# already enabled. With `default-features = false` and `rustls` alone, no HTTP
+# client is compiled in at all and `http_client::get` does not exist.
+# rustls rather than the default native-tls so no platform needs an OpenSSL
+# toolchain; the archive features cover `.tar.gz` (macOS, Linux) and `.zip`
+# (Windows) release assets.
+self_update = { version = "0.44", default-features = false, features = [
+    "reqwest",
+    "rustls",
+    "archive-tar",
+    "archive-zip",
+    "compression-flate2",
+] }
+tempfile = "3.27.0"
+# Used directly by the updater rather than through `self_update`'s wrapper:
+# that wrapper's `http_client` module is private, so its header types are
+# unreachable and `Download` exposes no timeout — a stalled download would hang
+# the update thread indefinitely. Owning the client gives timeouts, a
+# User-Agent (which the GitHub API requires) and streaming progress.
+# Already in the tree as self_update's own client, so this costs no new deps.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+    "http2",
+] }
 
 # The native menu bar. macOS only: `init_for_nsapp` is app-global and needs
 # nothing from the windowing layer, whereas Windows needs a per-window HWND

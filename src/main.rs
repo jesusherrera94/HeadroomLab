@@ -10,13 +10,14 @@ use HeadroomLab::{
         graph_service::GraphService,
         ports::{
             AudioEnginePort, ClipboardPort, DoomPort, FileWatcherPort, ProjectFileSystemPort,
-            ProjectGeneratorPort, TerminalPort,
+            ProjectGeneratorPort, TerminalPort, UpdaterPort,
         },
         recent_projects_service::RecentProjectsService,
         simulator_service::SimulatorService,
+        update_service::UpdateService,
     },
     infrastructure::{
-        audio_engine::AudioEngine, doom_engine::NeurodoomEngine,
+        audio_engine::AudioEngine, doom_engine::NeurodoomEngine, github_updater::GitHubUpdater,
         notify_file_watcher::NotifyFileWatcher, project_generator::TemplateProjectGenerator,
         pty_terminal::PtyTerminal, recent_projects_store::FileRecentProjectsStore,
         std_fs_project_file_system::StdFsProjectFileSystem, system_clipboard::SystemClipboard,
@@ -40,6 +41,11 @@ fn main() -> eframe::Result<()> {
     let file_watcher: Rc<dyn FileWatcherPort> = Rc::new(NotifyFileWatcher::new());
     let clipboard: Rc<dyn ClipboardPort> = Rc::new(SystemClipboard::new());
     let doom: Rc<dyn DoomPort> = Rc::new(NeurodoomEngine::new());
+
+    // The one port held as an `Arc` rather than an `Rc`: the updater blocks on
+    // network IO, so `UpdateWorker` runs it on a thread of its own.
+    let updater: std::sync::Arc<dyn UpdaterPort> = std::sync::Arc::new(GitHubUpdater::new());
+    let update_service = UpdateService::new(updater);
 
     // The root window is the Splash screen.
     let options = eframe::NativeOptions {
@@ -78,6 +84,7 @@ fn main() -> eframe::Result<()> {
                 clipboard,
                 terminal,
                 doom,
+                update_service,
             )))
         }),
     )

@@ -31,6 +31,8 @@ pub struct MenuRequests {
     pub focus_window: Option<WindowId>,
     pub show_about: bool,
     pub open_help: bool,
+    /// Run a version check now, and report the outcome either way (D6).
+    pub check_for_updates: bool,
     pub open_emulator: bool,
     pub build_run: bool,
     pub compile: bool,
@@ -63,6 +65,7 @@ pub fn dispatch(command: MenuCommand, editor: Option<&mut EditorState>) -> MenuR
         MenuCommand::FocusWindow(window) => requests.focus_window = Some(window),
         MenuCommand::About => requests.show_about = true,
         MenuCommand::Help => requests.open_help = true,
+        MenuCommand::CheckForUpdates => requests.check_for_updates = true,
         MenuCommand::OpenEmulator => requests.open_emulator = true,
         MenuCommand::BuildRun => requests.build_run = true,
         MenuCommand::Compile => requests.compile = true,

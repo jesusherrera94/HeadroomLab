@@ -77,6 +77,9 @@ pub enum TransportCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCommand {
     About,
+    /// Ask for a version check now. Sits beside About on macOS and under Help
+    /// elsewhere (D6), which is where each platform puts it.
+    CheckForUpdates,
     Help,
     Quit,
 
@@ -342,6 +345,10 @@ pub struct MenuContext {
     pub can_comment: bool,
 
     pub build_running: bool,
+    /// Whether this build can check for updates at all — false in a debug build,
+    /// or wherever the updater is switched off (D3). The menu item greys out
+    /// rather than vanishing, so its absence is never mistaken for a bug.
+    pub updates_available: bool,
 
     pub simulator_open: bool,
     pub graph_open: bool,
@@ -366,6 +373,7 @@ impl Default for MenuContext {
             can_paste: false,
             can_comment: false,
             build_running: false,
+            updates_available: false,
             simulator_open: false,
             graph_open: false,
             doom_open: false,
@@ -394,13 +402,13 @@ impl MenuModel {
 
         let menus = match surface {
             MenuSurface::Global => vec![
-                app_menu(),
+                app_menu(&ctx),
                 file_menu(&ctx, surface),
                 edit_menu(&ctx),
                 build_menu(&ctx),
                 transport_menu(&ctx),
                 window_menu(&ctx),
-                help_menu(),
+                help_menu(&ctx, surface),
             ],
             // D14: only the menus this window can act on. The App menu has no
             // separate home off macOS, so About and Quit fold into File.
@@ -409,16 +417,20 @@ impl MenuModel {
                 edit_menu(&ctx),
                 build_menu(&ctx),
                 window_menu(&ctx),
-                help_menu(),
+                help_menu(&ctx, surface),
             ],
             MenuSurface::Window(WindowId::Simulator) => vec![
                 file_menu(&ctx, surface),
                 transport_menu(&ctx),
                 window_menu(&ctx),
-                help_menu(),
+                help_menu(&ctx, surface),
             ],
             MenuSurface::Window(WindowId::Graph) => {
-                vec![file_menu(&ctx, surface), window_menu(&ctx), help_menu()]
+                vec![
+                    file_menu(&ctx, surface),
+                    window_menu(&ctx),
+                    help_menu(&ctx, surface),
+                ]
             }
             // Splash, Initial and DOOM draw no strip (S4).
             MenuSurface::Window(_) => Vec::new(),
@@ -500,11 +512,16 @@ fn predefined(label: &str, chord: Option<Chord>, which: PredefinedItem) -> MenuE
 }
 
 /// The macOS application menu. Never built for a per-window surface.
-fn app_menu() -> Menu {
+fn app_menu(ctx: &MenuContext) -> Menu {
     Menu {
         title: "HeadroomLab".to_string(),
         entries: vec![
             item("About HeadroomLab", MenuCommand::About, true),
+            item(
+                "Check for Updates…",
+                MenuCommand::CheckForUpdates,
+                ctx.updates_available,
+            ),
             MenuEntry::Separator,
             predefined("Services", None, PredefinedItem::Services),
             predefined("Hide HeadroomLab", Some(HIDE), PredefinedItem::Hide),
@@ -752,10 +769,23 @@ fn window_menu(ctx: &MenuContext) -> Menu {
     }
 }
 
-fn help_menu() -> Menu {
+fn help_menu(ctx: &MenuContext, surface: MenuSurface) -> Menu {
+    let mut entries = vec![item("HeadroomLab Help", MenuCommand::Help, true)];
+
+    // On macOS this lives in the application menu, where every Mac app puts it.
+    // The other platforms have no application menu, so Help is its home (D6).
+    if surface != MenuSurface::Global {
+        entries.push(MenuEntry::Separator);
+        entries.push(item(
+            "Check for Updates…",
+            MenuCommand::CheckForUpdates,
+            ctx.updates_available,
+        ));
+    }
+
     Menu {
         title: "Help".to_string(),
-        entries: vec![item("HeadroomLab Help", MenuCommand::Help, true)],
+        entries,
     }
 }
 
@@ -1250,6 +1280,63 @@ mod tests {
         };
         let simulator = MenuModel::build(&ctx, MenuSurface::Window(WindowId::Simulator));
         assert!(simulator.is_enabled(MenuCommand::Transport(TransportCommand::PlayPause)));
+    }
+
+    /// D6: the App menu on macOS, Help everywhere else — because those are the
+    /// two places users of each platform look for it.
+    #[test]
+    fn check_for_updates_sits_where_the_platform_expects_it() {
+        let ctx = MenuContext {
+            updates_available: true,
+            ..editing()
+        };
+
+        let global = MenuModel::build(&ctx, MenuSurface::Global);
+        let app_menu = global
+            .menus
+            .iter()
+            .find(|m| m.title == "HeadroomLab")
+            .unwrap();
+        assert!(
+            app_menu
+                .entries
+                .iter()
+                .any(|e| matches!(e, MenuEntry::Item(i)
+                    if i.command == MenuCommand::CheckForUpdates)),
+            "macOS wants it beside About"
+        );
+        let global_help = global.menus.iter().find(|m| m.title == "Help").unwrap();
+        assert!(
+            !global_help
+                .entries
+                .iter()
+                .any(|e| matches!(e, MenuEntry::Item(i)
+                    if i.command == MenuCommand::CheckForUpdates)),
+            "and not in Help as well"
+        );
+
+        let per_window = MenuModel::build(&ctx, MenuSurface::Window(WindowId::Editor));
+        let help = per_window.menus.iter().find(|m| m.title == "Help").unwrap();
+        assert!(
+            help.entries.iter().any(|e| matches!(e, MenuEntry::Item(i)
+                    if i.command == MenuCommand::CheckForUpdates)),
+            "off macOS there is no app menu, so Help is its home"
+        );
+    }
+
+    /// D3: a build with the updater switched off shows the item greyed rather
+    /// than hiding it, so its absence is never mistaken for a missing feature.
+    #[test]
+    fn check_for_updates_greys_out_when_updates_are_disabled() {
+        let off = global(&editing());
+        assert!(off.find(MenuCommand::CheckForUpdates).is_some());
+        assert!(!off.is_enabled(MenuCommand::CheckForUpdates));
+
+        let on = global(&MenuContext {
+            updates_available: true,
+            ..editing()
+        });
+        assert!(on.is_enabled(MenuCommand::CheckForUpdates));
     }
 
     #[test]

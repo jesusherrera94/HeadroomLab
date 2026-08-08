@@ -5,6 +5,7 @@ use crate::domain::file_system::FileSystemError;
 use crate::domain::plugin::PluginError;
 use crate::domain::project::RecentProject;
 use crate::domain::terminal::{ShellChoice, TerminalPalette, TerminalSize, TerminalSnapshot};
+use crate::domain::update::{ReleaseInfo, UpdateError};
 // Port: the application depends on this abstraction.
 
 /// Failure persisting the recents list. Save failures are logged, never
@@ -291,4 +292,34 @@ pub trait AudioEnginePort {
     fn is_playing(&self) -> bool;
     /// Returns a copy of the original decoded buffer, or `None` if no audio is loaded.
     fn snapshot_samples(&self) -> Option<AudioSnapshot>;
+}
+
+/// The self-updater.
+///
+/// **Unlike every other port here this one is `Send + Sync`.** The rest are held
+/// as `Rc<dyn …>` and only ever touched on the UI thread; this one blocks on
+/// network and filesystem IO, so `UpdateWorker` runs it on a thread of its own
+/// and `main.rs` wires it as an `Arc`.
+///
+/// Split into three calls rather than one so the caller decides what happens
+/// between them: the splash installs immediately, while a manual check from the
+/// Editor has to get past the unsaved-work guard before it may restart (D7).
+pub trait UpdaterPort: Send + Sync {
+    /// Asks whether a newer release exists for this platform.
+    ///
+    /// `Ok(None)` means "already current" — the ordinary answer, not a failure.
+    fn check(&self) -> Result<Option<ReleaseInfo>, UpdateError>;
+
+    /// Downloads `release` and puts it in place, reporting bytes as it goes.
+    ///
+    /// `on_progress` is called with `(received, total)` and must be cheap: it
+    /// runs on the worker thread, once per chunk.
+    fn download_and_install(
+        &self,
+        release: &ReleaseInfo,
+        on_progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
+    ) -> Result<(), UpdateError>;
+
+    /// Hands over to the newly installed build. Does not return on success.
+    fn restart(&self) -> Result<std::convert::Infallible, UpdateError>;
 }

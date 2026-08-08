@@ -11,3 +11,4 @@ pub mod project;
 pub mod signal;
 pub mod terminal;
 pub mod text_document;
+pub mod update;
