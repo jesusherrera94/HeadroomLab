@@ -2,9 +2,6 @@ use eframe::egui::{self, CornerRadius, RichText, Stroke};
 
 use crate::presentation::theme;
 
-/// Modal error dialog: dark scrim that swallows clicks behind it, centered
-/// red-bordered panel with an "Error" title, the message, and a Dismiss
-/// button. Returns `true` when dismissed this frame.
 pub fn error_dialog(ctx: &egui::Context, message: &str) -> bool {
     let mut dismissed = false;
 

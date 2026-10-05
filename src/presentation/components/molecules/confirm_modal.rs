@@ -1,20 +1,11 @@
-//! Reusable confirmation modal: a titled prompt with Cancel and a confirm
-//! button, plus an optional third "do it the safe way" button. Only the text and
-//! the labels change between uses — the caller owns the payload and decides what
-//! the confirmation triggers. `destructive` paints the confirm button red (for
-//! deletes and discards). Mirrors `error_dialog` styling.
-
 use eframe::egui::{self, CornerRadius, RichText, Stroke};
 
 use crate::presentation::theme;
 
-/// The text a given confirmation shows.
 pub struct ConfirmModalContent<'a> {
     pub title: &'a str,
     pub message: &'a str,
     pub confirm_label: &'a str,
-    /// Optional non-destructive alternative (e.g. "Save"), shown as the accented
-    /// primary button. `None` keeps the plain two-button modal.
     pub alternate_label: Option<&'a str>,
     pub destructive: bool,
 }
@@ -75,8 +66,6 @@ pub fn confirm_modal(ctx: &egui::Context, content: ConfirmModalContent) -> Confi
                 if confirm.clicked() {
                     events.confirmed = true;
                 }
-                // The safe choice sits last, in the accent colour, so it reads as
-                // the default next to the red discard.
                 if let Some(label) = content.alternate_label {
                     ui.add_space(4.0);
                     let alternate = ui.add(

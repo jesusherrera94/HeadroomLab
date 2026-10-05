@@ -10,9 +10,7 @@ use crate::domain::signal::{DB_FLOOR, Spectrum, Waveform};
 use crate::presentation::theme;
 
 const PLOT_HEIGHT_PX: f32 = 300.0;
-/// Point budget per pane: beyond this the series is peak-decimated.
 const POINT_BUDGET: usize = 960;
-/// Minimum zoom span as a fraction of the full range (parity with the previous UI).
 const MIN_SPAN_FRACTION: f64 = 1.0 / 200.0;
 
 pub const MIN_FREQ_HZ: f64 = 20.0;
@@ -92,8 +90,6 @@ pub fn spectrum_pane(
 
     reset_button(ui, reset);
 }
-
-// -- Shared pane behavior -----------------------------------------------------
 
 fn pane_chrome(ui: &mut egui::Ui, title: &str, add_plot: impl FnOnce(&mut egui::Ui)) {
     ui.label(
@@ -176,10 +172,7 @@ fn format_hz(hz: f64) -> String {
     }
 }
 
-// -- Series construction (visible range only, peak-decimated when wide) --------
 
-/// Either every visible sample (when zoomed in enough) or a min/max envelope
-/// per bucket (when the visible range is wide), so zoomed-out views stay fast.
 fn waveform_points(wave: &Waveform, start_s: f64, end_s: f64) -> Vec<[f64; 2]> {
     let sample_rate = wave.sample_rate as f64;
     if wave.samples.is_empty() || sample_rate <= 0.0 {
@@ -213,8 +206,6 @@ fn waveform_points(wave: &Waveform, start_s: f64, end_s: f64) -> Vec<[f64; 2]> {
     }
 }
 
-/// Spectrum points in (log10 Hz, dB) space; peak dB per bucket when there are
-/// more visible bins than the point budget.
 fn spectrum_points(spectrum: &Spectrum, start_log: f64, end_log: f64) -> Vec<[f64; 2]> {
     let visible: Vec<usize> = spectrum
         .frequencies_hz

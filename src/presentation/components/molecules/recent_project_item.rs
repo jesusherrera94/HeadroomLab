@@ -1,14 +1,9 @@
-//! One clickable row in the recents list: a 2-char abbreviation badge, the
-//! project name, and its muted, ellipsized path. Returns `true` when clicked.
-
 use eframe::egui::{self, CornerRadius, RichText, Stroke};
 
 use crate::domain::project::RecentProject;
 use crate::presentation::theme;
 
 pub fn recent_project_item(ui: &mut egui::Ui, project: &RecentProject) -> bool {
-    // Reserve a shape slot so the hover highlight can be painted *behind* the
-    // row contents once we know whether the row is hovered.
     let bg = ui.painter().add(egui::Shape::Noop);
 
     let frame = egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 7));
@@ -48,7 +43,6 @@ pub fn recent_project_item(ui: &mut egui::Ui, project: &RecentProject) -> bool {
     response.clicked()
 }
 
-/// The little monospace abbreviation badge.
 fn badge(ui: &mut egui::Ui, abbr: &str) {
     let size = 26.0;
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
@@ -69,8 +63,6 @@ fn badge(ui: &mut egui::Ui, abbr: &str) {
     );
 }
 
-/// Truncates from the left (keeping the tail of the path visible) with a
-/// leading ellipsis when longer than `max` chars.
 fn ellipsize(text: &str, max: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= max {

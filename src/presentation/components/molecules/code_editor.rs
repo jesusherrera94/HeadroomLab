@@ -1,12 +1,3 @@
-//! The editable code area: line-number gutter + a syntax-highlighted
-//! `TextEdit::multiline`, sharing one horizontally-scrolling viewport.
-//!
-//! egui's own `TextEdit` gets the code-editing keys *almost* right — Tab inserts
-//! a literal `\t` and Enter does not indent at all (there is a TODO to that
-//! effect in egui itself). Rather than fight the widget after the fact, we
-//! rewrite the offending key events in the input queue **before** `TextEdit`
-//! sees them, so its cursor handling, selection and undo all stay consistent.
-
 use std::ops::Range;
 
 use eframe::egui::{
@@ -23,41 +14,21 @@ use crate::domain::text_document::{
 use crate::presentation::components::atoms::line_numbers::{gutter_width, line_numbers};
 use crate::presentation::syntax;
 
-/// What the user did in the code area this frame.
 #[derive(Default)]
 pub struct CodeEditorOutput {
-    /// The buffer text was modified.
     pub changed: bool,
-    /// 1-based cursor position, for the status bar.
     pub cursor: Option<(usize, usize)>,
 }
 
 pub struct CodeEditorRequest<'a> {
     pub text: &'a mut String,
     pub language: Language,
-    /// False for buffers past the highlight threshold — still editable, just
-    /// rendered as plain monospace.
     pub highlighted: bool,
-    /// Stable per-file id, so egui keeps cursor, selection, scroll and undo
-    /// separately for each open tab.
     pub id: egui::Id,
-    /// A character range to select and scroll into view this frame (find hits).
     pub select: Option<Range<usize>>,
-    /// The find bar's current match, tinted in the layout for as long as the bar
-    /// is open. Separate from `select` because egui only paints a selection
-    /// while the widget has focus, and during a find the focus is in the query
-    /// field.
     pub match_range: Option<Range<usize>>,
-    /// Read side of the system clipboard, for the context menu's Paste. The
-    /// keyboard `⌘V` never comes through here — egui gets that as an OS event.
     pub clipboard: &'a dyn ClipboardPort,
-    /// Character ranges to mark with a squiggle, and the colour of each. Empty
-    /// once the buffer has been edited: the compiler's line numbers no longer
-    /// describe this text.
     pub squiggles: &'a [(Range<usize>, egui::Color32)],
-    /// A command raised by the menu bar this frame. It joins the context menu's
-    /// commands at the same junction, so all three entry points — chord, context
-    /// menu, menu bar — run the one implementation.
     pub injected: Option<EditorCommand>,
 }
 
@@ -74,8 +45,6 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
         injected,
     } = request;
 
-    // Rewrite Tab / Enter / opening-pair keys, and run the editor commands,
-    // before `TextEdit` consumes them.
     let pending = rewrite_events(ui, id, text, language, clipboard);
 
     let gutter = gutter_width(ui, text.lines().count().max(1));
@@ -86,9 +55,6 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
-                // Reserve the gutter column. Zero height: the numbers are painted
-                // afterwards from the galley's own row positions, which is the
-                // only way to stay aligned without assuming a row height.
                 let (gutter_rect, _) =
                     ui.allocate_exact_size(egui::vec2(gutter, 0.0), egui::Sense::hover());
 
@@ -106,11 +72,7 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                     .id(id)
                     .font(syntax::code_font())
                     .frame(egui::Frame::NONE)
-                    // Tab indents instead of moving focus; we rewrite the event
-                    // above so it inserts spaces rather than a tab character.
                     .lock_focus(true)
-                    // Clamped to the available width by egui; the galley decides
-                    // the real extent, so long lines drive the horizontal scroll.
                     .desired_width(f32::INFINITY)
                     .layouter(&mut layouter)
                     .show(ui);
@@ -119,9 +81,6 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
 
                 result.changed = output.response.response.changed();
 
-                // The clipboard is read once, as the menu opens, rather than on
-                // every frame it stays open: on X11 each read is a round-trip to
-                // the owning process.
                 let paste_id = id.with("can_paste");
                 if output.response.response.secondary_clicked() {
                     let available = clipboard.read().is_some();
@@ -133,21 +92,10 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                     let can_paste = ui.data(|data| data.get_temp(paste_id).unwrap_or(false));
                     chosen = editor_menu(ui, text, id, language, can_paste);
                 });
-                // The two menus cannot both fire in one frame: opening either
-                // closes the other. `or` rather than an overwrite so a frame that
-                // merely *paints* an open context menu can't blank an injection.
                 let chosen = chosen.or(injected);
 
-                // Run it here, where the `TextEdit`'s borrow of `text` is over.
-                // Menu items raise the same `EditorCommand`s the key chords do,
-                // so the two paths cannot drift apart in behaviour.
                 let mut menu_outcome = None;
                 if let Some(command) = chosen {
-                    // Opening the menu took focus off the editor, and egui paints
-                    // a `TextEdit`'s selection *only while it is focused*
-                    // (`text_edit/builder.rs:833`). Without handing focus back, a
-                    // command like Select Line would set a selection that is
-                    // never drawn — it looks like the item did nothing.
                     ui.memory_mut(|memory| memory.request_focus(id));
                     menu_outcome = run_command(ui, id, text, language, clipboard, command);
                     result.changed |= menu_outcome.as_ref().is_some_and(|o| o.changed);
@@ -155,7 +103,6 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
 
                 paint_squiggles(ui, &output.galley, output.galley_pos, squiggles);
 
-                // Auto-closed a pair: step back between the two characters.
                 if pending.step_back_one
                     && let Some(range) = output.state.cursor.char_range()
                 {
@@ -167,12 +114,6 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
                     output.state.clone().store(ui.ctx(), id);
                 }
 
-                // A selection to apply now the widget has run: a command's
-                // result, or a find hit. A command wins — the two cannot both
-                // occur in one frame, since a find selection only ever arises
-                // from interacting with the find bar.
-                // A keyboard command mutated the buffer before the widget ran,
-                // so egui's own `changed()` missed it.
                 result.changed |= pending.outcome.as_ref().is_some_and(|o| o.changed);
 
                 let selection = menu_outcome
@@ -208,34 +149,18 @@ pub fn code_editor(ui: &mut egui::Ui, request: CodeEditorRequest<'_>) -> CodeEdi
     result
 }
 
-/// What the event rewrite asked the caller to fix up afterwards.
 #[derive(Default)]
 struct PendingFixups {
-    /// An opening bracket/quote was expanded to a pair, so the cursor must move
-    /// back between them once `TextEdit` has inserted the text.
     step_back_one: bool,
-    /// A command ran and wants the selection put somewhere specific.
     outcome: Option<CommandOutcome>,
 }
 
-/// Where a command left the selection, and whether it needs bringing on screen.
-/// Only `⌘D` scrolls: the rest act at the cursor, which is already in view, and
-/// re-centring the pane on every comment toggle would be its own annoyance.
 struct CommandOutcome {
     selection: Range<usize>,
     scroll: bool,
-    /// Whether the command rewrote the buffer.
-    ///
-    /// Not derivable from egui: a keyboard command mutates `text` *before* the
-    /// `TextEdit` runs, so `Response::changed()` is false for it. Callers that
-    /// care whether the buffer moved — the dirty dot, and marking a file's
-    /// diagnostics stale — need this instead.
     changed: bool,
 }
 
-/// Rewrites this frame's key events so the `TextEdit` behaves like a code
-/// editor. Only runs while the editor has focus, so the shortcuts never fire at
-/// the explorer or the toolbar.
 fn rewrite_events(
     ui: &egui::Ui,
     id: egui::Id,
@@ -248,25 +173,16 @@ fn rewrite_events(
         return pending;
     }
 
-    // The cursor as of the previous frame — enough to know which line Enter is
-    // splitting, which is all auto-indent needs.
     let cursor = egui::text_edit::TextEditState::load(ui.ctx(), id)
         .and_then(|state| state.cursor.char_range())
         .map(|range| range.primary.index.0);
 
-    // Editor commands first: they are matched and dropped from the queue before
-    // anything else looks at it. `⇧⌥↓` in particular *must* be removed — egui's
-    // `move_single_cursor` ignores alt on the vertical arrows, so leaving it in
-    // would shift-extend the selection downward as well as duplicating.
     for command in take_commands(ui) {
         if let Some(outcome) = run_command(ui, id, text, language, clipboard, command) {
             pending.outcome = Some(outcome);
         }
     }
 
-    // Shift+Tab is handled here rather than by egui, whose `decrease_indentation`
-    // is hardcoded to a 4-space tab stop and so would do nothing to the 2-space
-    // indent our Tab inserts. Drop the event so `TextEdit` doesn't see it too.
     let mut dedent_requested = false;
     ui.input_mut(|input| {
         input.events.retain(|event| {
@@ -284,10 +200,6 @@ fn rewrite_events(
         });
     });
     if dedent_requested && let Some(index) = cursor {
-        // Captured before the mutation so the dedent becomes its own undo step.
-        // `apply_dedent` edits `text` directly, outside `TextEdit`'s event flow,
-        // so without this the undoer's timed coalescing could fold it into an
-        // unrelated typing step.
         let before = text.clone();
         if let Some(moved) = apply_dedent(text, index) {
             let mut state = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
@@ -302,7 +214,6 @@ fn rewrite_events(
     ui.input_mut(|input| {
         for event in &mut input.events {
             match event {
-                // Tab → our indent unit, rather than egui's literal `\t`.
                 egui::Event::Key {
                     key: egui::Key::Tab,
                     pressed: true,
@@ -312,7 +223,6 @@ fn rewrite_events(
                     *event = egui::Event::Text(INDENT.to_owned());
                 }
 
-                // Enter → newline plus the indentation of the line being left.
                 egui::Event::Key {
                     key: egui::Key::Enter,
                     pressed: true,
@@ -327,7 +237,6 @@ fn rewrite_events(
                     }
                 }
 
-                // A lone opening bracket or quote → insert the closing one too.
                 egui::Event::Text(typed) => {
                     let mut chars = typed.chars();
                     if let (Some(open), None) = (chars.next(), chars.next())
@@ -346,23 +255,14 @@ fn rewrite_events(
     pending
 }
 
-/// Paints a wavy underline beneath each diagnostic's range.
-///
-/// Painted rather than set as `TextFormat::underline`, which egui only draws
-/// straight — the prototype asks for `underline wavy`, and a straight line under
-/// code reads as a hyperlink. The geometry comes from the galley, the same
-/// source `line_numbers` uses for the gutter.
 fn paint_squiggles(
     ui: &egui::Ui,
     galley: &egui::Galley,
     galley_pos: egui::Pos2,
     squiggles: &[(Range<usize>, egui::Color32)],
 ) {
-    /// Horizontal distance between successive peaks.
     const PERIOD: f32 = 4.0;
-    /// How far the wave rises and falls.
     const AMPLITUDE: f32 = 1.5;
-    /// Gap between the text's bottom and the wave.
     const OFFSET: f32 = 1.0;
 
     let painter = ui.painter();
@@ -373,9 +273,6 @@ fn paint_squiggles(
 
         let start = galley.pos_from_cursor(CCursor::new(range.start));
         let end = galley.pos_from_cursor(CCursor::new(range.end));
-        // A range that wraps onto another row would need one wave per row; the
-        // code area does not wrap (see `syntax`), so a differing top means the
-        // range spans a newline and only the first row is marked.
         let right = if (end.top() - start.top()).abs() < 0.5 {
             end.left()
         } else {
@@ -403,16 +300,6 @@ fn paint_squiggles(
     }
 }
 
-/// Right-click menu for the code area. Returns the command the user picked.
-///
-/// Every item is disabled when it cannot act, so the menu never offers something
-/// that would silently do nothing — the same rule the tab strip's menu follows.
-/// Toggle Comment is here as well as on `⌘/` because layouts that need AltGr for
-/// `/` cannot produce that chord at all, and this is their only way to reach it.
-///
-/// The menu deliberately does not move the caret first: egui's `TextEdit` ignores
-/// secondary clicks for cursor placement, so these act on whatever was already
-/// selected.
 fn editor_menu(
     ui: &mut egui::Ui,
     text: &str,
@@ -425,8 +312,6 @@ fn editor_menu(
     let selection = selection_of(ui, id, text).unwrap_or(0..0);
     let has_selection = !selection.is_empty();
 
-    // `has_undo`/`has_redo` are asked against the live buffer, so the items grey
-    // out the moment there is nothing left to step through.
     let state = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
     let here = (
         CCursorRange::two(CCursor::new(selection.start), CCursor::new(selection.end)),
@@ -435,8 +320,6 @@ fn editor_menu(
     let undoer = state.undoer();
 
     let mut chosen = None;
-    // The chord comes from the command itself, so this menu and the menu bar
-    // cannot label the same action two different ways.
     let mut item = |ui: &mut egui::Ui, enabled, label, command| {
         if ui
             .add_enabled(
@@ -471,8 +354,6 @@ fn editor_menu(
     chosen
 }
 
-/// Matches this frame's key events against the editor's command chords, removing
-/// every one that matches from the queue so `TextEdit` never sees it.
 fn take_commands(ui: &egui::Ui) -> Vec<EditorCommand> {
     let mut commands = Vec::new();
     ui.input_mut(|input| {
@@ -487,12 +368,6 @@ fn take_commands(ui: &egui::Ui) -> Vec<EditorCommand> {
     commands
 }
 
-/// The command a key event stands for, if any.
-///
-/// `Modifiers::COMMAND` is Cmd on macOS and Ctrl elsewhere, so one arm covers
-/// all three platforms. Every command arm requires `!alt`, because on Windows
-/// and Linux `command == ctrl` and AltGr arrives as ctrl+alt — without the
-/// guard, AltGr combos on European layouts would trip these shortcuts.
 fn command_for(event: &egui::Event) -> Option<EditorCommand> {
     let egui::Event::Key {
         key,
@@ -504,7 +379,6 @@ fn command_for(event: &egui::Event) -> Option<EditorCommand> {
         return None;
     };
 
-    // ⇧⌥↓ — the one chord built on alt rather than guarded against it.
     if modifiers.shift && modifiers.alt && !modifiers.command && *key == egui::Key::ArrowDown {
         return Some(EditorCommand::DuplicateLine);
     }
@@ -516,19 +390,11 @@ fn command_for(event: &egui::Event) -> Option<EditorCommand> {
         egui::Key::L if !modifiers.shift => Some(EditorCommand::SelectLine),
         egui::Key::D if !modifiers.shift => Some(EditorCommand::SelectNextOccurrence),
         egui::Key::K if modifiers.shift => Some(EditorCommand::DeleteLine),
-        // Shift is deliberately ignored: `/` is a shifted key on the German,
-        // Spanish and French layouts, among others.
         egui::Key::Slash => Some(EditorCommand::ToggleComment),
         _ => None,
     }
 }
 
-/// Runs one command against the buffer. Text-changing commands record an undo
-/// point first, so each is undone by a single `⌘Z` (AC 9).
-///
-/// Undo, redo, cut, copy, paste and select-all reach this function only from the
-/// context menu: `take_commands` never matches their chords, because egui's own
-/// `TextEdit` already binds them correctly and there is nothing to improve on.
 fn run_command(
     ui: &egui::Ui,
     id: egui::Id,
@@ -537,10 +403,6 @@ fn run_command(
     clipboard: &dyn ClipboardPort,
     command: EditorCommand,
 ) -> Option<CommandOutcome> {
-    // A buffer that has never been clicked into has no stored cursor at all.
-    // Treat that as a caret at the top rather than dropping the command: the
-    // menu can be opened without ever having focused the editor, and silently
-    // doing nothing is exactly the bug that reads as "the menu is broken".
     let selection = selection_of(ui, id, text).unwrap_or(0..0);
 
     match command {
@@ -609,8 +471,6 @@ fn run_command(
     }
 }
 
-/// Menu-driven undo/redo. Drives the same `TextEditUndoer` the `⌘Z` key does, so
-/// the two share one history rather than keeping rival stacks.
 fn step_history(
     ui: &egui::Ui,
     id: egui::Id,
@@ -646,7 +506,6 @@ fn step_history(
     })
 }
 
-/// The text of a character range — the selection, for cut and copy.
 fn slice_of(text: &str, range: Range<usize>) -> String {
     text.chars()
         .skip(range.start)
@@ -654,12 +513,7 @@ fn slice_of(text: &str, range: Range<usize>) -> String {
         .collect()
 }
 
-/// Applies `edit`, recording the pre-edit buffer as an undo point first.
-///
-/// The new cursor is stored here as well as being returned. On the keyboard path
-/// this runs *before* the `TextEdit` does, so leaving the old cursor in place
-/// would hand the widget a position derived from text that no longer exists —
-/// past the end of the buffer, after a delete-line on the last line.
+
 fn commit(
     ui: &egui::Ui,
     id: egui::Id,
@@ -685,11 +539,6 @@ fn commit(
     }
 }
 
-/// Pushes `(selection, text)` onto the undo stack as a discrete step.
-///
-/// `add_undo` also clears the undoer's in-flight "flux", so a burst of typing
-/// that had not yet been committed becomes its own undo point rather than being
-/// merged with the command that follows it.
 fn push_undo(state: &mut egui::text_edit::TextEditState, selection: Range<usize>, text: String) {
     let range = CCursorRange::two(CCursor::new(selection.start), CCursor::new(selection.end));
     let mut undoer = state.undoer();
@@ -697,8 +546,6 @@ fn push_undo(state: &mut egui::text_edit::TextEditState, selection: Range<usize>
     state.set_undoer(undoer);
 }
 
-/// The current selection as a sorted character range. egui's primary cursor can
-/// sit either side of its secondary, depending on which way the user dragged.
 fn selection_of(ui: &egui::Ui, id: egui::Id, text: &str) -> Option<Range<usize>> {
     let range = egui::text_edit::TextEditState::load(ui.ctx(), id)?
         .cursor
@@ -709,8 +556,6 @@ fn selection_of(ui: &egui::Ui, id: egui::Id, text: &str) -> Option<Range<usize>>
     Some(primary.min(secondary)..primary.max(secondary))
 }
 
-/// `⌘D`: the word under the cursor on the first press, then each following
-/// occurrence of whatever is selected.
 fn occurrence_after(text: &str, selection: Range<usize>) -> Option<Range<usize>> {
     if selection.is_empty() {
         return editing::word_at(text, selection.start);
@@ -723,9 +568,6 @@ fn occurrence_after(text: &str, selection: Range<usize>) -> Option<Range<usize>>
     editing::next_occurrence(text, &needle, selection.end)
 }
 
-/// Removes one indent level from the line containing character offset `cursor`.
-/// Returns the cursor's new character offset, or `None` when the line has no
-/// leading whitespace to remove.
 fn apply_dedent(text: &mut String, cursor: usize) -> Option<usize> {
     let start_byte = line_start_byte(text, cursor);
     let end_byte = text[start_byte..]
@@ -738,12 +580,10 @@ fn apply_dedent(text: &mut String, cursor: usize) -> Option<usize> {
     }
     text.replace_range(start_byte..end_byte, &line);
 
-    // Keep the cursor on the same line: never let it slide onto the line above.
     let start_char = text[..start_byte].chars().count();
     Some(cursor.saturating_sub(removed).max(start_char))
 }
 
-/// Byte offset of the start of the line containing character offset `index`.
 fn line_start_byte(text: &str, index: usize) -> usize {
     let byte = text
         .char_indices()
@@ -752,8 +592,6 @@ fn line_start_byte(text: &str, index: usize) -> usize {
     text[..byte].rfind('\n').map_or(0, |i| i + 1)
 }
 
-/// The text of the line containing character offset `index`, up to the cursor —
-/// the line Enter is about to split.
 fn current_line(text: &str, index: usize) -> &str {
     let byte = text
         .char_indices()
@@ -769,9 +607,6 @@ mod tests {
     use super::{EditorCommand, apply_dedent, command_for, current_line, occurrence_after};
     use eframe::egui::{self, Modifiers};
 
-    /// A key-press event with the given modifiers, as the input queue delivers
-    /// it. `Modifiers::COMMAND` is Cmd on macOS and Ctrl elsewhere, so these
-    /// tests assert the same behaviour the running platform will see.
     fn press(key: egui::Key, modifiers: Modifiers) -> egui::Event {
         egui::Event::Key {
             key,
@@ -823,9 +658,6 @@ mod tests {
 
     #[test]
     fn alt_gr_combinations_never_trip_a_command() {
-        // On Windows and Linux `command == ctrl`, and AltGr arrives as ctrl+alt.
-        // Without the `!alt` guard these would fire while typing on European
-        // layouts.
         let alt_gr = Modifiers::COMMAND.plus(Modifiers::ALT);
         for key in [egui::Key::L, egui::Key::D, egui::Key::Slash, egui::Key::K] {
             assert_eq!(
@@ -840,12 +672,10 @@ mod tests {
     fn unmodified_and_released_keys_are_left_alone() {
         assert_eq!(command_for(&press(egui::Key::L, Modifiers::NONE)), None);
         assert_eq!(command_for(&press(egui::Key::D, Modifiers::SHIFT)), None);
-        // A plain ⇧↓ is egui's own extend-selection-down, not a duplicate.
         assert_eq!(
             command_for(&press(egui::Key::ArrowDown, Modifiers::SHIFT)),
             None
         );
-        // Releases are not commands.
         assert_eq!(
             command_for(&egui::Event::Key {
                 key: egui::Key::L,
@@ -856,7 +686,6 @@ mod tests {
             }),
             None
         );
-        // Nor is anything that isn't a key at all.
         assert_eq!(command_for(&egui::Event::Text("l".into())), None);
     }
 
@@ -864,15 +693,12 @@ mod tests {
     fn cmd_d_takes_the_word_first_then_walks_the_occurrences() {
         let text = "float gain;\nfloat Gain2 = gain;\n";
 
-        // Caret inside the first `gain` → select that word.
         let first = occurrence_after(text, 8..8).unwrap();
         assert_eq!(first, 6..10);
 
-        // Again → the next exact, whole-word hit, skipping `Gain2`.
         let second = occurrence_after(text, first).unwrap();
         assert_eq!(second, 26..30);
 
-        // Again → wraps back to the top.
         assert_eq!(occurrence_after(text, second), Some(6..10));
     }
 
@@ -883,24 +709,19 @@ mod tests {
 
     #[test]
     fn dedent_removes_one_level_and_keeps_the_cursor_on_its_line() {
-        // Cursor sits at the end of the indented line (char 15).
         let mut text = String::from("void f() {\n    int a;\n}\n");
         assert_eq!(apply_dedent(&mut text, 21), Some(19));
         assert_eq!(text, "void f() {\n  int a;\n}\n");
 
-        // A second dedent takes it to column 0.
         assert_eq!(apply_dedent(&mut text, 19), Some(17));
         assert_eq!(text, "void f() {\nint a;\n}\n");
 
-        // A third has nothing left to remove.
         assert_eq!(apply_dedent(&mut text, 17), None);
     }
 
     #[test]
     fn dedent_never_pulls_the_cursor_onto_the_previous_line() {
-        // Cursor at the very start of the indented line's content.
         let mut text = String::from("a\n  b\n");
-        // Line starts at char 2; removing 2 chars would underflow to char 0.
         assert_eq!(apply_dedent(&mut text, 2), Some(2));
         assert_eq!(text, "a\nb\n");
     }
@@ -911,7 +732,6 @@ mod tests {
         assert_eq!(current_line(text, 10), "void f() {");
         assert_eq!(current_line(text, 21), "    int a;");
         assert_eq!(current_line(text, 0), "");
-        // Past the end clamps to the last (empty) line.
         assert_eq!(current_line(text, 999), "");
     }
 

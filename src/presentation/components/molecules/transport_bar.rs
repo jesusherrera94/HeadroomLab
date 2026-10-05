@@ -1,7 +1,5 @@
 use eframe::egui;
 
-/// What the user did on the transport bar this frame. The caller (controller)
-/// translates these into service calls.
 #[derive(Default)]
 pub struct TransportEvents {
     pub upload_clicked: bool,
@@ -11,8 +9,6 @@ pub struct TransportEvents {
     pub seek_to: Option<f32>,
 }
 
-/// Upload / Play-Stop / Bypass / View graph button row plus the seek slider
-/// with current/total time labels.
 pub fn transport_bar(
     ui: &mut egui::Ui,
     has_audio: bool,
@@ -55,7 +51,6 @@ pub fn transport_bar(
 
     ui.horizontal(|ui| {
         ui.label(format!("{}s", current_time.round() as i64));
-        // The trailing duration label needs ~48px; let the slider fill the rest.
         ui.spacing_mut().slider_width = (ui.available_width() - 56.0).max(50.0);
         let slider = egui::Slider::new(current_time, 0.0..=duration.max(0.0)).show_value(false);
         if ui.add_enabled(has_audio, slider).changed() {
