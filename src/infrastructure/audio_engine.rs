@@ -8,8 +8,6 @@ use std::sync::{Arc, Mutex};
 
 // ── Shared state (audio thread + main thread) ─────────────────────────────────
 struct PlaybackState {
-    // Arc so `snapshot_samples` can hand out the buffer without copying it
-    // while the state mutex is held (the audio callback try_locks this mutex).
     samples: Arc<Vec<f32>>, // decoded PCM, interleaved, normalised to [-1, 1]
     sample_rate: u32,
     channels: u16,
@@ -101,7 +99,6 @@ fn fill_output(output: &mut [f32], state_arc: &Arc<Mutex<PlaybackState>>) {
         frame.copy_from_slice(&state.samples[start..start + frame.len()]);
         state.playhead += frame.len();
     }
-    // Apply effect chain (skipped when bypassed)
     if !state.is_bypassed {
         let (sample_rate, channels) = (state.sample_rate, state.channels);
         for processor in &mut state.processors {

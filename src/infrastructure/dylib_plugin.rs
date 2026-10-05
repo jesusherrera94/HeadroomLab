@@ -5,7 +5,6 @@ use libloading::{Library, Symbol};
 use crate::domain::audio_processor::AudioProcessor;
 use crate::domain::plugin::{EffectPlugin, PluginError};
 
-// FFI function signatures exported by every effect .dylib.
 type FnCreate = unsafe extern "C" fn(f32) -> *mut std::ffi::c_void;
 type FnDestroy = unsafe extern "C" fn(*mut std::ffi::c_void);
 type FnProcess = unsafe extern "C" fn(*mut std::ffi::c_void, *mut f32, usize, u16, u32);
@@ -61,7 +60,6 @@ impl DylibPlugin {
     }
 }
 
-/// Resolves a single required symbol, mapping a missing symbol to `InvalidPlugin`.
 unsafe fn load_symbol<T: Copy>(
     library: &Library,
     name: &[u8],
@@ -81,7 +79,6 @@ impl Drop for DylibPlugin {
     }
 }
 
-// The raw pointer is an opaque handle owned exclusively by this struct.
 unsafe impl Send for DylibPlugin {}
 
 impl EffectPlugin for DylibPlugin {
@@ -111,8 +108,6 @@ impl AudioProcessor for DylibPlugin {
     fn reset(&mut self) {}
 }
 
-/// Audio-thread shim: shares a single loaded plugin between the control
-/// (UI) thread and the audio callback via `Arc<Mutex<…>>`.
 pub struct SharedPluginProcessor {
     inner: Arc<Mutex<DylibPlugin>>,
 }

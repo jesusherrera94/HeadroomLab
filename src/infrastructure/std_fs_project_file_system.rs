@@ -1,7 +1,3 @@
-//! `std::fs`-backed adapter for `ProjectFileSystemPort`. Reads directories one
-//! level at a time (lazy, per HL10) and performs the explorer's mutations:
-//! create, rename, delete-to-trash (`trash` crate), and reveal (`opener`).
-
 use std::path::{Path, PathBuf};
 
 use crate::application::ports::{DirEntryInfo, ProjectFileSystemPort};
@@ -21,8 +17,6 @@ impl Default for StdFsProjectFileSystem {
     }
 }
 
-/// Validates `name` and returns the destination path inside `dir`, erroring if
-/// something already exists there.
 fn destination(dir: &Path, name: &str) -> Result<PathBuf, FileSystemError> {
     validate_entry_name(name)?;
     let target = dir.join(name.trim());
@@ -42,8 +36,6 @@ impl ProjectFileSystemPort for StdFsProjectFileSystem {
             .map(|entry| DirEntryInfo {
                 name: entry.file_name().to_string_lossy().into_owned(),
                 path: entry.path(),
-                // `file_type` avoids following symlinks and an extra `stat`; a
-                // symlink is rendered by its own kind, which is fine for display.
                 is_dir: entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
             })
             .collect()
@@ -91,8 +83,6 @@ impl ProjectFileSystemPort for StdFsProjectFileSystem {
     }
 
     fn write_file(&self, path: &Path, contents: &[u8]) -> Result<(), FileSystemError> {
-        // No existence check: writing recreates a file deleted from under a
-        // dirty buffer, which is exactly the recovery path we want.
         std::fs::write(path, contents).map_err(|e| io_error(path, e))
     }
 
@@ -101,8 +91,6 @@ impl ProjectFileSystemPort for StdFsProjectFileSystem {
     }
 }
 
-/// Maps an IO failure onto the domain error, keeping "gone" distinct from the
-/// rest so the UI can say something specific.
 fn io_error(path: &Path, e: std::io::Error) -> FileSystemError {
     match e.kind() {
         std::io::ErrorKind::NotFound => FileSystemError::NotFound(path.display().to_string()),
