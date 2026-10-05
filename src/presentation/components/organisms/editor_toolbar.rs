@@ -1,7 +1,3 @@
-//! The editor toolbar: three actions that drive the C++ build/run cycle.
-//! "Open emulator" is live in HL9; "Build & run" and "Compile" are wired to
-//! the terminal in a later task (Day 11).
-
 use eframe::egui::{self, RichText};
 
 use crate::presentation::theme;

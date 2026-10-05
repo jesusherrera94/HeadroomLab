@@ -1,6 +1,3 @@
-//! Simulated Hothouse hardware controls: 6 knobs, 3 three-way switches and
-//! 2 footswitches on the dark hardware panel.
-
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 
 use crate::presentation::components::atoms::{
@@ -8,7 +5,6 @@ use crate::presentation::components::atoms::{
 };
 use crate::presentation::theme;
 
-/// Control changes emitted this frame as `(index, value)` pairs.
 #[derive(Default)]
 pub struct HardwareEvents {
     pub knob_changes: Vec<(usize, f32)>,

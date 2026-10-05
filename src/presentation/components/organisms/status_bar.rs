@@ -1,7 +1,3 @@
-//! The bottom status bar, styled like VS Code's. The cursor position, language
-//! and unsaved marker are live; the branch and indentation segments remain
-//! mocked (they belong to later stories).
-
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular as ph;
 
@@ -11,27 +7,19 @@ use crate::domain::text_document::{DocumentContent, language_label};
 use crate::presentation::editor_controller::{EditorTab, save_shortcut_label};
 use crate::presentation::theme;
 
-/// Radius of the unsaved ●, matching the explorer row's.
 const DOT_RADIUS: f32 = 3.5;
-/// Width of the slot the dot is painted in.
 const DOT_SLOT: f32 = 12.0;
 
-/// The live editor facts the status bar reports.
 pub struct StatusInfo<'a> {
     pub project_name: &'a str,
     pub tab: Option<&'a EditorTab>,
-    /// 1-based cursor position in the active buffer, when it has focus.
     pub cursor: Option<(usize, usize)>,
-    /// The terminal's build session, when there is one to report.
     pub build: Option<(BuildKind, BuildStatus)>,
-    /// Errors and warnings from the last build, across the whole project.
     pub diagnostics: Counts,
 }
 
-/// What the user did in the status bar this frame.
 #[derive(Default)]
 pub struct StatusBarEvents {
-    /// The unsaved segment was clicked — save the active buffer.
     pub save: bool,
 }
 
@@ -51,9 +39,6 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
             events.save = unsaved_segment(ui, tab);
         }
 
-        // The build's outcome, coloured so a failure is visible even when the
-        // terminal panel is collapsed. Reads the same `BuildStatus` the Build
-        // tab's marker does, so the two cannot disagree.
         if let Some((kind, status)) = info.build {
             let color = match status {
                 BuildStatus::Running => theme::MUTED_ON_DARK,
@@ -76,9 +61,6 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
             let (line, col) = info.cursor.unwrap_or((1, 1));
             segment(ui, &format!("Ln {line}, Col {col}"));
 
-            // `2 errors · 1 warning`, red as soon as anything is an error.
-            // Absent entirely on a clean build — `summary` returns `None` — so a
-            // project with nothing wrong costs no space and says nothing.
             if let Some(text) = summary(info.diagnostics) {
                 let color = if info.diagnostics.errors > 0 {
                     theme::DIAGNOSTIC_ERROR
@@ -90,8 +72,6 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
             }
 
             if let Some(tab) = info.tab {
-                // A buffer past the highlight threshold is still editable, so say
-                // so rather than leaving the user wondering why it's monochrome.
                 if matches!(
                     tab.content,
                     DocumentContent::Text {
@@ -109,17 +89,6 @@ pub fn status_bar(ui: &mut egui::Ui, info: StatusInfo<'_>) -> StatusBarEvents {
     events
 }
 
-/// The clickable "this buffer is unsaved" segment. Returns whether it was
-/// pressed.
-///
-/// The dot is **painted**, not written as a `●` character: U+25CF is absent from
-/// both the bundled text fonts and Phosphor (whose glyphs all live in the private
-/// use area), so a literal one renders as a tofu box. The tab strip and the
-/// explorer row paint theirs for the same reason — keep all three painted.
-///
-/// The segment names the file rather than just saying "unsaved changes": with
-/// several dirty buffers open, the latter says nothing about which one Cmd+S is
-/// about to write.
 fn unsaved_segment(ui: &mut egui::Ui, tab: &EditorTab) -> bool {
     let inner = ui.horizontal(|ui| {
         let (rect, _) =
@@ -134,8 +103,6 @@ fn unsaved_segment(ui: &mut egui::Ui, tab: &EditorTab) -> bool {
     });
     ui.add_space(10.0);
 
-    // Own id rather than the layout's, so clicking the segment can't collide
-    // with the horizontal's own interaction slot.
     let id = ui.make_persistent_id("status_bar_unsaved");
     let response = ui
         .interact(inner.response.rect, id, egui::Sense::click())

@@ -1,17 +1,3 @@
-//! The built-in terminal: a header with the session tabs, and a grid rendered
-//! from the active session's [`TerminalSnapshot`].
-//!
-//! **Rendering.** One `LayoutJob` per visible row, with runs of cells that share
-//! a colour and style merged into a single section. Painting cell by cell would
-//! re-shape every glyph every frame; this way the cost is proportional to the
-//! number of *runs*, and the font atlas does the rest. Backgrounds are painted
-//! underneath as rectangles, again merged into runs.
-//!
-//! **Input.** While the grid has focus every key is translated to the bytes a
-//! terminal would send and handed to the PTY — including `Ctrl+C`, which is why
-//! copy is bound to `⌘C` / `Ctrl+Shift+C` instead. The editor's own shortcuts
-//! are kept out of the way by `editor_window`, which stops consuming them while
-//! the terminal is focused.
 
 use eframe::egui::{self, RichText, text::LayoutJob};
 
@@ -22,14 +8,11 @@ use crate::presentation::terminal_controller::{
 use crate::presentation::theme;
 use egui_phosphor::regular as ph;
 
-/// Where the terminal's keyboard focus lives. A single id: only the active
-/// session is ever on screen.
 fn focus_id() -> egui::Id {
     egui::Id::new("terminal_grid")
 }
 
-/// True while the terminal owns the keyboard — `editor_window` asks so it can
-/// leave the editor's shortcuts alone (D9).
+
 pub fn has_focus(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.has_focus(focus_id()))
 }
@@ -51,7 +34,6 @@ pub fn terminal_panel(ui: &mut egui::Ui, state: &mut TerminalState) -> TerminalR
     requests
 }
 
-/// "TERMINAL", the session tabs, and the panel-level actions.
 fn header(ui: &mut egui::Ui, state: &mut TerminalState) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -124,12 +106,6 @@ fn header(ui: &mut egui::Ui, state: &mut TerminalState) {
     ui.add_space(2.0);
 }
 
-/// A tab's caption: its title, with a build's outcome as a leading glyph.
-///
-/// The glyphs come from **Phosphor**, not from literal `●`/`✓`/`✕`. Those live
-/// outside the bundled text fonts and outside Phosphor's private-use range, so
-/// writing them renders a tofu box — the same trap `status_bar::unsaved_segment`
-/// documents, which is why it paints its dot instead.
 fn tab_label(session: &crate::presentation::terminal_controller::Session) -> String {
     use crate::domain::terminal::BuildStatus;
     let marker = match (session.kind, session.status) {
@@ -144,15 +120,10 @@ fn tab_label(session: &crate::presentation::terminal_controller::Session) -> Str
     }
 }
 
-/// The grid, or whatever stands in for it: an empty panel, a spawn failure, or a
-/// child that has exited.
 fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalRequests) {
     let (cell_width, cell_height) = cell_metrics(ui);
     terminal_controller::ensure_open(state);
 
-    // Windows without git-bash: builds cannot run, but the PowerShell session
-    // below is perfectly usable — so this is a strip above the grid rather than
-    // something that replaces it.
     if state.missing_git_bash {
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -190,10 +161,6 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
         return;
     }
 
-    // A child that has exited leaves its output behind: the emulator is still
-    // alive, holding the whole scrollback. So the notice is a strip *above* the
-    // grid, never a replacement for it — a failed build's output is exactly what
-    // the user needs at the moment it stops running.
     if let Some(text) = session.exit_notice() {
         let failed = matches!(
             (session.kind, session.status),
@@ -210,9 +177,6 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
         }
     }
 
-    // Sized *after* the strips above have taken their space. Measuring first
-    // would tell the PTY it has more rows than are actually left, and the extra
-    // ones would be painted past the bottom of the panel and clipped away.
     let available = ui.available_size();
     let (cols, rows) = grid_size(available.x, available.y, cell_width, cell_height);
     terminal_controller::resize(
@@ -229,18 +193,6 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
         return;
     };
 
-    // Exactly **one** widget covers the grid, and it owns `focus_id()`.
-    //
-    // Two widgets over the same rect would be a silent trap: the one registered
-    // later wins the hit test, so an `allocate_response` here plus a separate
-    // `interact` for the focus id would leave the first response's `clicked()`
-    // permanently false — the terminal could never be focused and would swallow
-    // every keystroke. Allocating with `hover` and then interacting with our own
-    // id keeps it to one.
-    //
-    // `Sense::click_and_drag()` already implies `FOCUSABLE`, and interacting
-    // every frame is what keeps egui's dead-man's switch (`Focus::end_pass`)
-    // from dropping the focus of a widget it thinks has disappeared.
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ui.available_height()),
         egui::Sense::hover(),
@@ -250,8 +202,6 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
 
     paint_grid(ui, &snapshot, origin, cell_width, cell_height);
 
-    // Clicking anywhere in the grid takes the keyboard, the same way clicking
-    // into the code editor does.
     if response.clicked() || response.drag_started() {
         response.request_focus();
     }
@@ -261,17 +211,7 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
 
     handle_mouse(ui, state, &response, origin, cell_width, cell_height);
 
-    // `has_focus` here rather than `Response::has_focus`, which also requires
-    // `input.focused` — a viewport-level flag whose value for an immediate child
-    // viewport (which the Editor window is) would silently gate out every
-    // keystroke. egui's own `TextEdit` gates on the memory check alone.
     if has_focus(ui.ctx()) {
-        // Claim the keys egui otherwise reserves for focus navigation. Without
-        // this, Tab moves focus to the next widget instead of completing a
-        // filename, the arrows walk the widget tree instead of shell history,
-        // and Escape drops focus instead of leaving vim's insert mode — none of
-        // which would ever reach the PTY. `TextEdit::lock_focus` does the same
-        // thing for the same reason.
         ui.memory_mut(|memory| {
             memory.set_focus_lock_filter(
                 focus_id(),
@@ -289,11 +229,6 @@ fn body(ui: &mut egui::Ui, state: &mut TerminalState, requests: &mut TerminalReq
     handle_scroll(ui, state, &response, cell_height);
 }
 
-/// One compact row reporting that the child has exited, with a Restart button.
-/// Returns whether Restart was pressed.
-///
-/// Deliberately thin: it sits above the grid rather than replacing it, so the
-/// scrollback stays readable, selectable and copyable after the process is gone.
 fn exit_strip(ui: &mut egui::Ui, message: &str, failed: bool) -> bool {
     let mut restart = false;
     ui.horizontal(|ui| {
@@ -315,8 +250,6 @@ fn exit_strip(ui: &mut egui::Ui, message: &str, failed: bool) -> bool {
     restart
 }
 
-/// A centred message with a single action — used for a session that could not
-/// start at all, where there is no grid to show behind it.
 fn notice(
     ui: &mut egui::Ui,
     message: &str,
@@ -338,10 +271,6 @@ fn notice(
     });
 }
 
-/// The pixel size of one monospace cell.
-///
-/// Measured from the code font's own advance for `M` rather than assumed, so the
-/// grid stays aligned if the font or its size ever changes.
 fn cell_metrics(ui: &egui::Ui) -> (f32, f32) {
     let font = egui::FontId::monospace(theme::FONT_BODY);
     ui.fonts_mut(|fonts| {
@@ -351,8 +280,6 @@ fn cell_metrics(ui: &egui::Ui) -> (f32, f32) {
     })
 }
 
-/// Paints one frame of the grid: backgrounds first as merged rectangles, then a
-/// `LayoutJob` per row with runs merged by colour and style.
 fn paint_grid(
     ui: &egui::Ui,
     snapshot: &crate::domain::terminal::TerminalSnapshot,
@@ -371,7 +298,6 @@ fn paint_grid(
         }
         let y = origin.y + row as f32 * cell_height;
 
-        // -- backgrounds, as runs ------------------------------------------
         let mut run_start = 0usize;
         for column in 0..=cells.len() {
             let ends = column == cells.len()
@@ -392,7 +318,6 @@ fn paint_grid(
             run_start = column;
         }
 
-        // -- text, one job per row -----------------------------------------
         let mut job = LayoutJob::default();
         let mut text = String::with_capacity(cells.len());
         let mut run_start = 0usize;
@@ -403,8 +328,6 @@ fn paint_grid(
             }
 
             let run: String = cells[run_start..column].iter().map(|c| c.c).collect();
-            // Trailing blanks carry no ink; skipping them keeps the job small on
-            // a mostly-empty screen, which is the common case.
             if !run.trim().is_empty() {
                 let start = text.len();
                 text.push_str(&run);
@@ -414,7 +337,6 @@ fn paint_grid(
                     format: format_of(&cells[run_start], &font),
                 });
             } else {
-                // Keep the columns aligned by advancing through the gap.
                 text.push_str(&run);
                 let start = text.len() - run.len();
                 job.sections.push(egui::text::LayoutSection {
@@ -438,7 +360,6 @@ fn paint_grid(
         }
     }
 
-    // -- cursor -------------------------------------------------------------
     if let Some((col, row)) = snapshot.cursor {
         let rect = egui::Rect::from_min_size(
             egui::pos2(
@@ -447,8 +368,6 @@ fn paint_grid(
             ),
             egui::vec2(cell_width, cell_height),
         );
-        // A hollow caret when unfocused, filled when focused — the same hint
-        // every terminal gives about where typing will land.
         if has_focus(ui.ctx()) {
             painter.rect_filled(rect, 0.0, theme::LABEL_ON_DARK.gamma_multiply(0.55));
         } else {
@@ -462,8 +381,6 @@ fn paint_grid(
     }
 }
 
-/// Selection wins over the cell's own background, so a highlighted region reads
-/// as one block regardless of what the program coloured it.
 fn background_of(cell: &TerminalCell) -> egui::Color32 {
     if cell.selected {
         theme::TERMINAL_SELECTION
@@ -472,7 +389,6 @@ fn background_of(cell: &TerminalCell) -> egui::Color32 {
     }
 }
 
-/// Whether two cells can share a layout section.
 fn same_run(a: &TerminalCell, b: &TerminalCell) -> bool {
     a.fg == b.fg && a.style == b.style && a.selected == b.selected
 }
@@ -496,8 +412,6 @@ fn format_of(cell: &TerminalCell, font: &egui::FontId) -> egui::TextFormat {
     }
 }
 
-/// Bold is rendered as a brighter foreground rather than a heavier face: the app
-/// ships one monospace weight, and a synthesised bold would break the cell grid.
 fn foreground_of(cell: &TerminalCell) -> egui::Color32 {
     let color = theme::terminal_color(cell.fg);
     if cell.style.bold {
@@ -512,7 +426,6 @@ fn brighten(rgb: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(lift(rgb.r), lift(rgb.g), lift(rgb.b))
 }
 
-/// Mouse selection: drag to select, and clicking clears whatever was selected.
 fn handle_mouse(
     ui: &egui::Ui,
     state: &mut TerminalState,
@@ -550,22 +463,12 @@ fn handle_mouse(
         session.drag_anchor = None;
     }
 
-    // A plain click (no drag) dismisses the selection, as terminals do.
     if response.clicked() {
         inner.select(None);
         let _ = ui;
     }
 }
 
-/// Wheel scrolling moves the grid's own viewport into the scrollback rather than
-/// an egui `ScrollArea` — the grid owns `display_offset`, and two scroll models
-/// over one buffer would fight.
-///
-/// Pixels are **accumulated** across frames before being converted to whole
-/// lines. Rounding each frame's delta on its own throws away everything smaller
-/// than half a line, which is most of what a trackpad produces — the effect is a
-/// terminal that simply refuses to scroll, and a long build log whose actual
-/// error can never be brought back into view.
 fn handle_scroll(
     ui: &egui::Ui,
     state: &mut TerminalState,
@@ -578,8 +481,6 @@ fn handle_scroll(
 
     state.scroll_carry += ui.input(|input| input.smooth_scroll_delta.y);
 
-    // Positive scrolls back into history, which is what alacritty's
-    // `Scroll::Delta` means too (`grid/mod.rs:165`).
     let lines = (state.scroll_carry / cell_height).trunc();
     if lines == 0.0 {
         return;
@@ -591,7 +492,6 @@ fn handle_scroll(
     }
 }
 
-/// Translates this frame's key and text events into the bytes a terminal sends.
 fn handle_keys(ui: &egui::Ui, state: &mut TerminalState, requests: &mut TerminalRequests) {
     let events = ui.input(|input| input.events.clone());
     let mut out: Vec<u8> = Vec::new();
@@ -606,8 +506,7 @@ fn handle_keys(ui: &egui::Ui, state: &mut TerminalState, requests: &mut Terminal
                 modifiers,
                 ..
             } => {
-                // Copy and paste first: on Windows and Linux these are
-                // Ctrl+Shift+…, because plain Ctrl+C has to stay SIGINT.
+
                 if is_copy(key, &modifiers) {
                     if let Some(text) = state
                         .active_session()
@@ -648,7 +547,6 @@ fn handle_keys(ui: &egui::Ui, state: &mut TerminalState, requests: &mut Terminal
     }
 }
 
-/// `⌘C` on macOS, `Ctrl+Shift+C` elsewhere.
 fn is_copy(key: egui::Key, modifiers: &egui::Modifiers) -> bool {
     key == egui::Key::C
         && modifiers.command
@@ -656,7 +554,6 @@ fn is_copy(key: egui::Key, modifiers: &egui::Modifiers) -> bool {
         && !modifiers.alt
 }
 
-/// `⌘V` on macOS, `Ctrl+Shift+V` elsewhere.
 fn is_paste(key: egui::Key, modifiers: &egui::Modifiers) -> bool {
     key == egui::Key::V
         && modifiers.command
@@ -664,15 +561,9 @@ fn is_paste(key: egui::Key, modifiers: &egui::Modifiers) -> bool {
         && !modifiers.alt
 }
 
-/// The bytes a terminal sends for a key press.
-///
-/// Returns `None` for keys egui also delivers as `Event::Text` (ordinary
-/// characters), so they are not sent twice.
 pub fn key_bytes(key: egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>> {
     use egui::Key as K;
 
-    // Control characters: Ctrl+A..Ctrl+Z are 0x01..0x1a. `ctrl` rather than
-    // `command`, so ⌘C on macOS never becomes SIGINT.
     if modifiers.ctrl && !modifiers.alt {
         if let Some(letter) = ctrl_letter(key) {
             return Some(vec![letter]);
@@ -715,7 +606,6 @@ pub fn key_bytes(key: egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>>
         _ => return None,
     };
 
-    // Alt-prefixed keys send ESC first, which is how a terminal encodes Meta.
     if modifiers.alt {
         let mut escaped = vec![0x1b];
         escaped.extend_from_slice(bytes);
@@ -724,7 +614,6 @@ pub fn key_bytes(key: egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>>
     Some(bytes.to_vec())
 }
 
-/// The control byte for `Ctrl+<letter>`, e.g. `Ctrl+C` → `0x03`.
 fn ctrl_letter(key: egui::Key) -> Option<u8> {
     use egui::Key as K;
     let index = match key {
@@ -798,18 +687,15 @@ mod tests {
 
     #[test]
     fn ordinary_characters_are_left_to_the_text_event() {
-        // Sending these here too would type every letter twice.
         assert_eq!(key_bytes(Key::A, &Modifiers::NONE), None);
         assert_eq!(key_bytes(Key::Num1, &Modifiers::NONE), None);
     }
 
     #[test]
     fn copy_never_collides_with_the_interrupt() {
-        // On every platform, a bare Ctrl+C must reach the child as SIGINT.
         assert!(!is_copy(Key::C, &Modifiers::CTRL));
         assert_eq!(key_bytes(Key::C, &Modifiers::CTRL), Some(vec![0x03]));
 
-        // And the platform's copy chord must not be sent to the child.
         let copy = if cfg!(target_os = "macos") {
             Modifiers::COMMAND
         } else {
@@ -829,7 +715,6 @@ mod tests {
             selected: false,
         };
 
-        // Same everything but the character: one run.
         let mut other = base;
         other.c = 'b';
         assert!(same_run(&base, &other));
