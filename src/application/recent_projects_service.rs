@@ -1,12 +1,11 @@
-//! Owns the in-memory recent-projects list and keeps it persisted through the
-//! `RecentProjectsStore` port. Most-recent-first, deduped by path, capped at 5.
+
 
 use std::rc::Rc;
 
 use crate::application::ports::RecentProjectsStore;
 use crate::domain::project::RecentProject;
 
-/// Maximum number of recent projects kept.
+
 const MAX_RECENTS: usize = 5;
 
 pub struct RecentProjectsService {
@@ -15,21 +14,17 @@ pub struct RecentProjectsService {
 }
 
 impl RecentProjectsService {
-    /// Loads the persisted list on construction (empty if none/corrupt).
+
     pub fn new(store: Rc<dyn RecentProjectsStore>) -> Self {
         let mut items = store.load();
         Self::normalize(&mut items);
         Self { store, items }
     }
 
-    /// The current list, most-recent-first.
     pub fn list(&self) -> &[RecentProject] {
         &self.items
     }
 
-    /// Records a project: removes any existing entry for the same path, pushes
-    /// this one to the front, truncates to the cap and persists. A save failure
-    /// is logged; the in-memory list still reflects the change.
     pub fn record(&mut self, project: RecentProject) {
         self.items.retain(|p| !same_path(&p.path, &project.path));
         self.items.insert(0, project);
@@ -40,8 +35,6 @@ impl RecentProjectsService {
         }
     }
 
-    /// Empties the list and persists that (File ▸ Open Recent ▸ Clear Menu).
-    /// A save failure is logged, exactly as `record` treats one.
     pub fn clear(&mut self) {
         self.items.clear();
         if let Err(e) = self.store.save(&self.items) {
@@ -49,8 +42,6 @@ impl RecentProjectsService {
         }
     }
 
-    /// Dedups (keeping the first/most-recent occurrence) and caps a freshly
-    /// loaded list, tolerating a hand-edited or stale file.
     fn normalize(items: &mut Vec<RecentProject>) {
         let mut seen: Vec<std::path::PathBuf> = Vec::new();
         items.retain(|p| {
@@ -65,9 +56,7 @@ impl RecentProjectsService {
     }
 }
 
-/// Compares two paths, canonicalizing where the target exists on disk so the
-/// same directory reached by different spellings dedups; falls back to a raw
-/// comparison for not-yet-created paths (e.g. a Create target).
+
 fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -83,7 +72,6 @@ mod tests {
 
     use crate::application::ports::RecentProjectsError;
 
-    /// In-memory store standing in for the file adapter.
     #[derive(Default)]
     struct FakeStore {
         saved: RefCell<Vec<RecentProject>>,

@@ -27,17 +27,9 @@ pub struct GraphComputeRequest {
     pub knob_values: [f32; 6],
     pub switch_positions: [i32; 3],
     pub footswitch_states: [bool; 2],
-    /// Bumped whenever a new audio file is loaded, so the worker knows when
-    /// its cached original waveform/spectrum are stale.
     pub audio_generation: u64,
 }
 
-/// Owns the "what should the processed signal look like right now" question,
-/// fully independent from the live playback plugin owned by `SimulatorService`.
-///
-/// This type only tracks the current control snapshot and a dirty flag on the
-/// UI thread; the heavy lifting (plugin render + FFTs) happens in
-/// [`compute_graph_data`], which the graph worker runs on a background thread.
 pub struct GraphService {
     audio_engine: Rc<dyn AudioEnginePort>,
     plugin_path: RefCell<Option<String>>,
@@ -107,8 +99,6 @@ impl GraphService {
         was
     }
 
-    /// Packages the current control snapshot + audio buffer into a `Send` job
-    /// for the graph worker. Returns `None` only if no audio has been loaded yet.
     pub fn build_request(&self) -> Option<GraphComputeRequest> {
         let snapshot = self.audio_engine.snapshot_samples()?;
         Some(GraphComputeRequest {
@@ -122,12 +112,7 @@ impl GraphService {
     }
 }
 
-/// Renders the original + processed signals for one request. Pure with respect
-/// to shared state, so it can run on any thread (`DylibPlugin` is `Send`).
-///
-/// `cached_original` lets the caller reuse the original waveform/spectrum
-/// across requests with the same `audio_generation`, since turning a knob
-/// never changes the original signal.
+
 pub fn compute_graph_data(
     request: &GraphComputeRequest,
     cached_original: Option<(Waveform, Spectrum)>,
@@ -159,9 +144,6 @@ pub fn compute_graph_data(
     }
 }
 
-/// Loads a fresh, disposable plugin instance, replays the request's control
-/// snapshot onto it, runs it once over the whole original buffer, and lets
-/// it drop. No shared state with the live playback plugin.
 fn render_processed(request: &GraphComputeRequest) -> Result<Waveform, String> {
     let path = request
         .plugin_path

@@ -4,14 +4,11 @@ use std::thread;
 
 use crate::application::graph_service::{GraphComputeRequest, GraphData, compute_graph_data};
 
-/// Runs graph recomputes on a dedicated background thread so the UI event
-/// loop (and therefore the simulator controls) never blocks on plugin renders
-/// or FFTs.
-///
-/// The owner submits a job only while `is_idle()` and polls for the result,
-/// giving latest-wins behaviour: while a knob is being dragged the next job
-/// simply carries the newest control snapshot. Dropping the worker closes the
-/// job channel, which cleanly shuts the thread down.
+/* Runs graph recomputes on a dedicated background thread so the UI event
+    loop (and therefore the simulator controls) never blocks on plugin renders
+    or FFTs.
+*/
+
 pub struct GraphComputeWorker {
     job_tx: Sender<GraphComputeRequest>,
     result_rx: Receiver<GraphData>,
@@ -35,14 +32,12 @@ impl GraphComputeWorker {
         }
     }
 
-    /// Queues a recompute. The result arrives later via `try_recv_result`.
     pub fn submit(&self, request: GraphComputeRequest) {
         if self.job_tx.send(request).is_ok() {
             self.in_flight.set(self.in_flight.get() + 1);
         }
     }
 
-    /// Non-blocking poll for a finished recompute.
     pub fn try_recv_result(&self) -> Option<GraphData> {
         match self.result_rx.try_recv() {
             Ok(data) => {
