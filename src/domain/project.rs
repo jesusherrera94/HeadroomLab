@@ -1,21 +1,14 @@
-//! A project the user has opened. Pure value type; serde derives are IO-free.
-
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// One entry in the "recent projects" list: a display name plus the absolute
-/// directory it lives in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentProject {
-    /// Display name; trimmed, non-empty.
     pub name: String,
-    /// Absolute project directory.
     pub path: PathBuf,
 }
 
 impl RecentProject {
-    /// Builds a project, trimming surrounding whitespace off the name.
     pub fn new(name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         Self {
             name: name.into().trim().to_string(),
@@ -23,9 +16,6 @@ impl RecentProject {
         }
     }
 
-    /// Derives the 2-char badge shown in the recents list. Takes the first
-    /// letter of the first two "words" (split on space, `-`, `_` or camelCase
-    /// boundaries); falls back to the first two characters. Always uppercased.
     pub fn abbr(&self) -> String {
         let words = split_words(&self.name);
         let letters: Vec<char> = words
@@ -44,10 +34,6 @@ impl RecentProject {
     }
 }
 
-/// Derives a snake_case build target from a display name: trims, lowercases,
-/// collapses every run of non-alphanumeric characters to a single `_`, and
-/// strips leading digits/underscores (C identifiers can't start with a digit).
-/// Returns `None` when nothing usable survives (e.g. `"###"`).
 pub fn sanitize_target(name: &str) -> Option<String> {
     let mut out = String::new();
     let mut pending_sep = false;
@@ -60,12 +46,10 @@ pub fn sanitize_target(name: &str) -> Option<String> {
             pending_sep = false;
             out.push(ch.to_ascii_lowercase());
         } else {
-            // Any non-alphanumeric run becomes at most one separator.
             pending_sep = true;
         }
     }
 
-    // Leading digits/underscores are invalid at the start of an identifier.
     let target: String = out
         .trim_start_matches(|c: char| c.is_ascii_digit() || c == '_')
         .to_string();
@@ -77,8 +61,6 @@ pub fn sanitize_target(name: &str) -> Option<String> {
     }
 }
 
-/// Splits a name into significant words on space/`-`/`_` separators and
-/// camelCase boundaries (lower→upper transitions).
 fn split_words(name: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();

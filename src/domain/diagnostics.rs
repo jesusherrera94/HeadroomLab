@@ -1,32 +1,12 @@
-//! Pure diagnostic policy: turning a build's output into the errors and warnings
-//! the editor shows, and counting them.
-//!
-//! No IO and no UI here — the text arrives from the terminal's Build tab
-//! (`presentation::terminal_controller`) and the drawing happens in the problems
-//! strip and the code editor.
-//!
-//! **Parsed by hand rather than with a regex.** The grammar is
-//! `path:line:col: severity: message` — a handful of `split_once` steps — so a
-//! dependency would buy nothing, and each format gets a arm that says what it
-//! recognises. The `file:line:col` in the story's technical note describes the
-//! *shape* of the match, not the crate.
-//!
-//! The text this receives has already been through a terminal emulator, which
-//! means two useful things: ANSI colour escapes are gone, and lines the terminal
-//! hard-wrapped have been rejoined (see `TerminalSession::logical_text`).
-
 use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::domain::editing;
 
-/// How many diagnostics the problems strip lists before summarising the rest.
-/// The first error is nearly always the real one; what follows is cascade.
 pub const MAX_LISTED: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Severity {
-    /// Ordered first so `sort` puts errors above warnings.
     Error,
     Warning,
 }
@@ -40,46 +20,30 @@ impl Severity {
     }
 }
 
-/// One complaint from the compiler or a build tool.
-///
-/// `file`/`line`/`column` are absent for tool-level failures (`ld:`,
-/// `make: ***`), which have nothing to jump to and get no squiggle.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Diagnostic {
     pub severity: Severity,
-    /// The path exactly as the compiler wrote it — resolution against the
-    /// project root is the caller's job, because only it knows the root.
+
     pub file: Option<String>,
-    /// 1-based, as compilers report it.
     pub line: Option<u32>,
-    /// 1-based **byte** column, as clang and gcc report it. Callers convert to a
-    /// character offset against the actual line ([`byte_column_to_char`]).
     pub column: Option<u32>,
     pub message: String,
-    /// `note:` continuations that belong to this diagnostic.
     pub notes: Vec<String>,
 }
 
 impl Diagnostic {
-    /// `effect.cpp:14`, or just the file, or nothing at all for a tool error.
     pub fn location(&self) -> Option<String> {
         let file = self.file.as_ref()?;
-        // Only the basename: the strip is narrow, and the full path is rarely
-        // what distinguishes one row from another in a single-directory project.
         let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
         Some(match self.line {
             Some(line) => format!("{name}:{line}"),
             None => name.to_string(),
         })
     }
-
-    /// Whether this can be jumped to and underlined.
     pub fn has_position(&self) -> bool {
         self.file.is_some() && self.line.is_some()
     }
 }
 
-/// How many of each severity.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     pub errors: usize,
@@ -107,8 +71,6 @@ pub fn counts(diagnostics: &[Diagnostic]) -> Counts {
     counts
 }
 
-/// The status bar's wording, or `None` when there is nothing to report — a clean
-/// build should cost no space at all.
 pub fn summary(counts: Counts) -> Option<String> {
     if counts.is_empty() {
         return None;
@@ -131,11 +93,6 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-/// Every diagnostic in a build's output, in the order the compiler produced them.
-///
-/// Duplicates are dropped: a header included by several translation units emits
-/// the same warning once per unit, and a strip full of one repeated line tells
-/// the user nothing. Counts follow the deduplicated set.
 pub fn parse_diagnostics(output: &str) -> Vec<Diagnostic> {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut seen: HashSet<Diagnostic> = HashSet::new();
@@ -146,7 +103,6 @@ pub fn parse_diagnostics(output: &str) -> Vec<Diagnostic> {
             continue;
         }
 
-        // A `note:` belongs to whatever it follows, so one mistake stays one row.
         if let Some(note) = parse_note(line) {
             if let Some(last) = diagnostics.last_mut() {
                 last.notes.push(note);
@@ -157,7 +113,6 @@ pub fn parse_diagnostics(output: &str) -> Vec<Diagnostic> {
         let Some(diagnostic) = parse_line(line) else {
             continue;
         };
-        // Hash without the notes, which are appended after insertion.
         if seen.insert(diagnostic.clone()) {
             diagnostics.push(diagnostic);
         }
@@ -166,21 +121,13 @@ pub fn parse_diagnostics(output: &str) -> Vec<Diagnostic> {
     diagnostics
 }
 
-/// One line, if it is a diagnostic at all.
 fn parse_line(line: &str) -> Option<Diagnostic> {
     parse_gcc_clang(line)
         .or_else(|| parse_msvc(line))
         .or_else(|| parse_tool_error(line))
 }
 
-/// `src/effect.cpp:14:24: error: use of undeclared identifier 'cutof'`
-///
-/// Also accepts the `file:line:` form some tools emit without a column, and
-/// keeps any trailing `[-Wunused-variable]` as part of the message — it is how
-/// the user knows which flag to silence.
 fn parse_gcc_clang(line: &str) -> Option<Diagnostic> {
-    // Work right-to-left from the severity keyword: paths can contain colons on
-    // Windows (`C:\...`), so splitting left-to-right on ':' is not safe.
     let (location, rest) = split_at_severity(line)?;
     let (severity, message) = rest;
 
@@ -215,8 +162,6 @@ fn parse_gcc_clang(line: &str) -> Option<Diagnostic> {
     })
 }
 
-/// Splits `location: severity: message` at the severity keyword, returning the
-/// location and the parsed severity plus message.
 fn split_at_severity(line: &str) -> Option<(&str, (Severity, &str))> {
     for (keyword, severity) in [
         (": error: ", Severity::Error),
@@ -234,10 +179,6 @@ fn split_at_severity(line: &str) -> Option<(&str, (Severity, &str))> {
     None
 }
 
-/// `effect.cpp(14,24): error C2065: 'cutof': undeclared identifier`
-///
-/// Unreachable through the shipped Makefile — it needs `CXX_HOST=cl` — but the
-/// arm is small and the parser is pure, so there is nothing to lose by it.
 fn parse_msvc(line: &str) -> Option<Diagnostic> {
     let (head, rest) = line.split_once("): ")?;
     let (file, position) = head.split_once('(')?;
@@ -269,26 +210,19 @@ fn parse_msvc(line: &str) -> Option<Diagnostic> {
     })
 }
 
-/// Failures with no source position: `ld: symbol(s) not found`,
-/// `clang++: error: linker command failed`, `make: *** [target] Error 1`.
-///
-/// They count and they appear in the strip, but there is nowhere to jump to.
 fn parse_tool_error(line: &str) -> Option<Diagnostic> {
     let trimmed = line.trim();
 
-    // `make: *** [build/libx.dylib] Error 1`
     if trimmed.starts_with("make:") && trimmed.contains("***") {
         return Some(tool_error(trimmed));
     }
 
-    // `ld: symbol(s) not found for architecture arm64`
     if let Some(rest) = trimmed.strip_prefix("ld: ")
         && !rest.trim().is_empty()
     {
         return Some(tool_error(trimmed));
     }
 
-    // `clang++: error: linker command failed with exit code 1`
     if let Some((tool, rest)) = trimmed.split_once(": error: ")
         && !tool.contains(' ')
         && !rest.trim().is_empty()
@@ -310,27 +244,17 @@ fn tool_error(message: &str) -> Diagnostic {
     }
 }
 
-/// `src/effect.cpp:14:24: note: did you mean 'cutoff'?` — the note's own text.
 fn parse_note(line: &str) -> Option<String> {
     let at = line.find(": note: ")?;
     let note = line[at + ": note: ".len()..].trim();
     (!note.is_empty()).then(|| note.to_string())
 }
 
-/// A compiler's 1-based **byte** column as a 0-based **character** offset into
-/// `line`.
-///
-/// Clang and gcc count bytes; egui's cursors count characters. On a line with a
-/// multi-byte character before the diagnostic, using the byte column directly
-/// would underline the wrong token — the same trap `domain::editing` documents.
-/// Clamps to the end of the line.
 pub fn byte_column_to_char(line: &str, column: u32) -> usize {
     let byte = (column.max(1) - 1) as usize;
     if byte >= line.len() {
         return line.chars().count();
     }
-    // Round down to a character boundary: a column can land mid-character when
-    // the compiler counts a byte inside a multi-byte sequence.
     let mut boundary = byte;
     while boundary > 0 && !line.is_char_boundary(boundary) {
         boundary -= 1;
@@ -338,24 +262,11 @@ pub fn byte_column_to_char(line: &str, column: u32) -> usize {
     line[..boundary].chars().count()
 }
 
-/// How wide a squiggle is when the column does not land on an identifier —
-/// enough to be visible without implying the rest of the statement is wrong.
 const FALLBACK_SPAN: usize = 3;
 
-/// The character range in `text` that a diagnostic at `line`/`column` points at.
-///
-/// The extent is **the token at that column**, via [`editing::word_at`] — the
-/// function `⌘D` already uses, which understands C++ identifier characters, so
-/// `cutof` underlines whole. Punctuation and past-the-end columns fall back to a
-/// short fixed run.
-///
-/// `line` and `column` are 1-based as compilers report them, and `column` is a
-/// *byte* offset (see [`byte_column_to_char`]). Returns `None` when the line is
-/// not in the buffer at all — the file may have been edited since the build.
 pub fn span_in(text: &str, line: u32, column: Option<u32>) -> Option<Range<usize>> {
     let line_index = (line.max(1) - 1) as usize;
 
-    // Character offset of the start of the requested line.
     let mut line_start = 0usize;
     let mut current = 0usize;
     for (index, line_text) in text.split('\n').enumerate() {
@@ -375,7 +286,6 @@ pub fn span_in(text: &str, line: u32, column: Option<u32>) -> Option<Range<usize
     None
 }
 
-/// The span inside one line, given a character offset into it.
 fn span_within_line(line_text: &str, line_start: usize, column: usize) -> Range<usize> {
     let length = line_text.chars().count();
 
@@ -383,8 +293,6 @@ fn span_within_line(line_text: &str, line_start: usize, column: usize) -> Range<
         return (line_start + word.start)..(line_start + word.end);
     }
 
-    // Punctuation, whitespace, or the end of the line: a short run so there is
-    // still something to see.
     let start = column.min(length);
     let end = (start + FALLBACK_SPAN).min(length).max(start);
     (line_start + start)..(line_start + end)

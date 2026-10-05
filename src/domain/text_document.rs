@@ -1,43 +1,21 @@
-//! Pure text-document policy: what a file's bytes may become in the editor, the
-//! language it is written in, and the indentation rules typing follows.
-//!
-//! No IO and no egui here — the disk work lives in the infrastructure adapter
-//! and the rendering in `presentation`. Mirrors `file_system.rs`, which holds
-//! the name policy shared by every caller.
-
-/// The indentation unit inserted by Tab, matching the "Spaces: 2" the status bar
-/// advertises.
 pub const INDENT: &str = "  ";
 
-/// Hard cap on what may be opened at all. Anything larger renders as a
-/// placeholder rather than being pulled into a `TextEdit`.
 pub const MAX_OPEN_BYTES: u64 = 5 * 1024 * 1024;
-
-/// Above either highlight cap the buffer stays editable but is rendered as plain
-/// monospace: syntect re-highlights the *whole* buffer on every keystroke, so
-/// large files would stutter with no benefit.
 pub const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
 pub const MAX_HIGHLIGHT_LINES: usize = 5_000;
 
-/// What a file turned out to be once the open-time guards ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentContent {
-    /// Editable UTF-8 text. `highlight` is the syntax-colouring decision (false
-    /// for large files); `crlf` records the dominant line ending so a save can
-    /// restore it.
     Text {
         text: String,
         highlight: bool,
         crlf: bool,
     },
-    /// Not valid UTF-8 — read-only placeholder, never savable.
     Binary,
-    /// Over [`MAX_OPEN_BYTES`] — read-only placeholder, never savable.
     TooLarge { bytes: u64 },
 }
 
 impl DocumentContent {
-    /// The editable text, or `None` for the read-only placeholder variants.
     pub fn text(&self) -> Option<&str> {
         match self {
             DocumentContent::Text { text, .. } => Some(text),
@@ -45,17 +23,11 @@ impl DocumentContent {
         }
     }
 
-    /// Whether this document can be typed into and saved.
     pub fn is_editable(&self) -> bool {
         matches!(self, DocumentContent::Text { .. })
     }
 }
 
-/// Applies the open-time guards to raw file bytes. The single place the
-/// thresholds above are read.
-///
-/// Order matters: the size cap is checked before the UTF-8 decode so a huge file
-/// is rejected without allocating a second copy of it as a `String`.
 pub fn classify(bytes: Vec<u8>) -> DocumentContent {
     let len = bytes.len() as u64;
     if len > MAX_OPEN_BYTES {
@@ -65,7 +37,6 @@ pub fn classify(bytes: Vec<u8>) -> DocumentContent {
         return DocumentContent::Binary;
     };
 
-    // Normalise to `\n` for editing; the flag lets the save restore CRLF.
     let crlf = raw.contains("\r\n");
     let text = if crlf { raw.replace("\r\n", "\n") } else { raw };
 
@@ -79,7 +50,6 @@ pub fn classify(bytes: Vec<u8>) -> DocumentContent {
     }
 }
 
-/// Restores the file's original line endings for writing back to disk.
 pub fn to_disk_bytes(text: &str, crlf: bool) -> Vec<u8> {
     if crlf {
         text.replace('\n', "\r\n").into_bytes()
@@ -88,11 +58,6 @@ pub fn to_disk_bytes(text: &str, crlf: bool) -> Vec<u8> {
     }
 }
 
-/// The language of a file, driving both the syntect grammar and the status bar.
-///
-/// Deliberately parallel to `presentation::editor_controller::icon_for_file`,
-/// which answers a different question (which icon) over the same extensions —
-/// keep the two in step when adding a file kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     Cpp,
@@ -104,8 +69,6 @@ pub enum Language {
     PlainText,
 }
 
-/// Resolves the language from a file name: full-name specials first (a
-/// `Makefile` has no extension), then the extension.
 pub fn language_for(file_name: &str) -> Language {
     match file_name {
         "Makefile" | "makefile" | "GNUmakefile" => return Language::Make,
@@ -130,7 +93,6 @@ pub fn language_for(file_name: &str) -> Language {
     }
 }
 
-/// Human-readable name for the status bar.
 pub fn language_label(lang: Language) -> &'static str {
     match lang {
         Language::Cpp => "C++",
@@ -143,10 +105,6 @@ pub fn language_label(lang: Language) -> &'static str {
     }
 }
 
-/// The marker that comments out a single line, for `⌘/`. `None` means the
-/// language has no line comment, and the toggle is a no-op there — JSON has no
-/// comments at all, and Markdown's `<!-- -->` is a block form this editor does
-/// not attempt.
 pub fn line_comment(lang: Language) -> Option<&'static str> {
     match lang {
         Language::Cpp | Language::C | Language::Header => Some("//"),
@@ -155,9 +113,6 @@ pub fn line_comment(lang: Language) -> Option<&'static str> {
     }
 }
 
-/// The token syntect resolves a grammar from (`find_syntax_by_token`). Headers
-/// use the C++ grammar; plain text has no grammar and falls back at the call
-/// site.
 pub fn syntect_token(lang: Language) -> &'static str {
     match lang {
         Language::Cpp | Language::Header => "cpp",
@@ -169,9 +124,6 @@ pub fn syntect_token(lang: Language) -> &'static str {
     }
 }
 
-/// The 1-based line and column of a **character** offset into `text` — egui's
-/// cursors are character-indexed, and the status bar reports positions the way
-/// an editor does. An offset past the end clamps to the last position.
 pub fn line_col_at(text: &str, char_index: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
@@ -186,15 +138,12 @@ pub fn line_col_at(text: &str, char_index: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// The leading whitespace of `line` (spaces or tabs, as written).
 pub fn leading_indent(line: &str) -> String {
     line.chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect()
 }
 
-/// The indentation a new line should start with, given the line it follows:
-/// the previous indent, plus one level when the previous line opens a block.
 pub fn auto_indent_for(previous_line: &str) -> String {
     let mut indent = leading_indent(previous_line);
     if previous_line.trim_end().ends_with('{') {
@@ -203,7 +152,6 @@ pub fn auto_indent_for(previous_line: &str) -> String {
     indent
 }
 
-/// The character that closes `open`, for auto-pairing. Quotes close themselves.
 pub fn closing_pair(open: char) -> Option<char> {
     match open {
         '(' => Some(')'),
@@ -215,9 +163,6 @@ pub fn closing_pair(open: char) -> Option<char> {
     }
 }
 
-/// Removes one indent level from the start of `line`, returning the new line and
-/// how many characters were removed. Falls back to trimming whatever leading
-/// whitespace exists (a single tab, or a partial indent).
 pub fn dedent(line: &str) -> (String, usize) {
     if let Some(rest) = line.strip_prefix(INDENT) {
         return (rest.to_string(), INDENT.len());
@@ -346,12 +291,11 @@ mod tests {
     fn line_col_is_one_based_and_counts_characters() {
         let text = "int a;\nint b;\n";
         assert_eq!(line_col_at(text, 0), (1, 1));
-        assert_eq!(line_col_at(text, 6), (1, 7)); // end of line 1
-        assert_eq!(line_col_at(text, 7), (2, 1)); // just after the newline
-        assert_eq!(line_col_at(text, 13), (2, 7)); // end of line 2
-        assert_eq!(line_col_at(text, 14), (3, 1)); // trailing newline → empty line 3
-        assert_eq!(line_col_at(text, 999), (3, 1)); // clamps past the end
-        // Multi-byte characters count as one column, not their byte length.
+        assert_eq!(line_col_at(text, 6), (1, 7));
+        assert_eq!(line_col_at(text, 7), (2, 1));
+        assert_eq!(line_col_at(text, 13), (2, 7));
+        assert_eq!(line_col_at(text, 14), (3, 1));
+        assert_eq!(line_col_at(text, 999), (3, 1));
         assert_eq!(line_col_at("héllo", 3), (1, 4));
     }
 
