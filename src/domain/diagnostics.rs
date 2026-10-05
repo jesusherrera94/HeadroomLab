@@ -20,6 +20,7 @@ impl Severity {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Diagnostic {
     pub severity: Severity,
 
