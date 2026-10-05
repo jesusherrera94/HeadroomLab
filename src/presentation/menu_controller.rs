@@ -1,37 +1,18 @@
-//! Turns a [`MenuCommand`] into effects.
-//!
-//! Commands that act on the open project are applied here, straight onto
-//! [`EditorState`] through the editor controller's public API. Everything that
-//! opens, closes or focuses a window is *returned* in [`MenuRequests`] instead:
-//! creating a viewport is only safe at one point in the frame (see
-//! `app_controller::prepare_simulator`), and that point is the app controller's
-//! to choose.
-//!
-//! Edit commands are not executed here at all — they are queued for the code
-//! area, which runs them through the same path a key chord takes.
-
 use eframe::egui;
 
 use crate::domain::menu::{Chord, MenuCommand, TransportCommand, WindowId};
 use crate::presentation::editor_controller::{self, EditorState, EntryKind};
 
-/// What the menu asked the app controller to do this frame.
 #[derive(Default)]
 pub struct MenuRequests {
-    /// Show the Initial window as a sibling. `true` also opens its Create modal.
     pub open_initial: Option<OpenInitial>,
-    /// Open the recent project at this index.
     pub open_recent: Option<usize>,
     pub clear_recents: bool,
-    /// Quit, via the unsaved-work guard.
     pub quit: bool,
-    /// Close the focused window. In the Editor this is a quit.
     pub close_window: bool,
-    /// Focus that window, opening it first if it is closed.
     pub focus_window: Option<WindowId>,
     pub show_about: bool,
     pub open_help: bool,
-    /// Run a version check now, and report the outcome either way (D6).
     pub check_for_updates: bool,
     pub open_emulator: bool,
     pub build_run: bool,
@@ -39,23 +20,16 @@ pub struct MenuRequests {
     pub transport: Option<TransportCommand>,
 }
 
-/// Which way the Initial window was asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenInitial {
-    /// File ▸ Open Project… — the picker as it normally opens.
     Picker,
-    /// File ▸ New Project… — with the Create modal already up.
     CreateModal,
 }
 
-/// Applies `command`. `editor` is `None` before a project is open, in which case
-/// every editor-scoped command is a no-op — the menu greys those out, so this is
-/// belt-and-braces against a stale click.
 pub fn dispatch(command: MenuCommand, editor: Option<&mut EditorState>) -> MenuRequests {
     let mut requests = MenuRequests::default();
 
     match command {
-        // -- Window-level: the app controller's business --------------------
         MenuCommand::NewProject => requests.open_initial = Some(OpenInitial::CreateModal),
         MenuCommand::OpenProject => requests.open_initial = Some(OpenInitial::Picker),
         MenuCommand::OpenRecent(index) => requests.open_recent = Some(index),
@@ -71,7 +45,6 @@ pub fn dispatch(command: MenuCommand, editor: Option<&mut EditorState>) -> MenuR
         MenuCommand::Compile => requests.compile = true,
         MenuCommand::Transport(action) => requests.transport = Some(action),
 
-        // -- Editor-scoped: applied here ------------------------------------
         MenuCommand::NewFile => {
             if let Some(state) = editor {
                 editor_controller::begin_create_at_selection(state, EntryKind::File);
@@ -102,27 +75,18 @@ pub fn dispatch(command: MenuCommand, editor: Option<&mut EditorState>) -> MenuR
                 editor_controller::open_find(state);
             }
         }
-        // Never run here: the code area owns every edit, and running one from
-        // this side would be the second implementation this design exists to
-        // avoid.
         MenuCommand::Edit(command) => {
             if let Some(state) = editor {
                 editor_controller::queue_command(state, command);
             }
         }
 
-        // Handed to the OS by the native adapter; never reaches this function.
         MenuCommand::Predefined(_) => {}
     }
 
     requests
 }
 
-/// The egui shortcut a [`Chord`] stands for, so the chord a menu *shows* and the
-/// chord that actually fires come from one table (AC5).
-///
-/// `Modifiers::COMMAND` is ⌘ on macOS and Ctrl elsewhere — the same mapping
-/// [`Chord`]'s own `Display` uses.
 pub fn shortcut(chord: Chord) -> egui::KeyboardShortcut {
     let mut modifiers = egui::Modifiers::NONE;
     if chord.command {
@@ -137,9 +101,6 @@ pub fn shortcut(chord: Chord) -> egui::KeyboardShortcut {
     egui::KeyboardShortcut::new(modifiers, key_for(chord.key))
 }
 
-/// Maps a chord's key spelling onto egui's key. Panics in debug on an unknown
-/// spelling: the table is a fixed set of constants, so a miss is a typo in this
-/// file rather than anything a user can provoke.
 fn key_for(key: &str) -> egui::Key {
     match key {
         "A" => egui::Key::A,
@@ -208,8 +169,6 @@ mod tests {
         );
     }
 
-    /// Editor-scoped commands ask nothing of the app controller — they act on
-    /// the state directly, so every request field stays clear.
     #[test]
     fn editor_commands_raise_no_window_requests() {
         for command in [
@@ -237,7 +196,6 @@ mod tests {
         assert!(requests.focus_window.is_none());
     }
 
-    /// The chord a menu shows and the chord that fires must be the same one.
     #[test]
     fn chords_convert_to_the_expected_egui_shortcut() {
         assert_eq!(
@@ -265,8 +223,6 @@ mod tests {
         );
     }
 
-    /// Every chord in the table must have an egui key — `key_for` debug-asserts,
-    /// so a missing arm fails right here rather than at the first keypress.
     #[test]
     fn every_chord_in_the_table_maps_to_a_key() {
         for chord in [

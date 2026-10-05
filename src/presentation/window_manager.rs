@@ -1,7 +1,3 @@
-//! Tracks which child windows (viewports) are open and owns their per-window
-//! state. Dropping a state closes the corresponding viewport on the next
-//! frame; dropping the graph session also shuts its compute worker down.
-
 use std::rc::Rc;
 
 use crate::application::graph_service::GraphService;
@@ -18,9 +14,6 @@ pub struct WindowManager {
 }
 
 impl WindowManager {
-    /// Opens the simulator with a fresh initial state (matching the previous
-    /// version, which created a brand-new window on every launch). If it's
-    /// already open it is reset and brought back to the front.
     pub fn open_simulator(&mut self) -> &mut SimulatorState {
         let was_open = self.simulator.is_some();
         let state = self.simulator.insert(SimulatorState::default());
@@ -28,8 +21,6 @@ impl WindowManager {
         state
     }
 
-    /// Opens the graph window, reusing the existing session (and bringing the
-    /// window back to the front) if it's already open.
     pub fn open_graph(&mut self, graph_service: &GraphService) {
         match &mut self.graph {
             Some(session) => session.focus_requested = true,
@@ -37,9 +28,6 @@ impl WindowManager {
         }
     }
 
-    /// Opens the DOOM.666 window, reusing the running game (and bringing the
-    /// window back to the front) if it's already open — clicking the file
-    /// twice must not reset a run in progress.
     pub fn open_doom(&mut self, port: &Rc<dyn DoomPort>) {
         match &mut self.doom {
             Some(state) => state.focus_requested = true,
@@ -47,12 +35,6 @@ impl WindowManager {
         }
     }
 
-    /// Closes the simulator **and the graph with it**.
-    ///
-    /// The graph plots the processed signal for the plugin the simulator loaded.
-    /// Left open on its own it would keep showing that signal indefinitely, with
-    /// nothing producing it and no way to refresh it — so the two close as one.
-    /// Dropping the session also shuts its compute worker down.
     pub fn close_simulator(&mut self) {
         self.simulator = None;
         self.graph = None;
