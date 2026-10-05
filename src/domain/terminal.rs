@@ -316,7 +316,7 @@ pub enum BuildUnavailable {
 }
 
 /// Where to send a user who needs git-bash.
-pub const GIT_FOR_WINDOWS_URL: &str = "https://git-scm.com/download/win";
+pub use crate::config::GIT_FOR_WINDOWS_URL;
 
 /// The program the Build tab runs for `kind`.
 ///

@@ -22,14 +22,57 @@ egui_extras = { version = "0.35.0", default-features = false, features = ["synte
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 alacritty_terminal = "0.26"
 neurodoom = "0.6.7"
+# The updater. `rustls` rather than the default native-tls so no platform needs
+# an OpenSSL toolchain to build; the archive/compression features cover the
+# `.tar.gz` (macOS, Linux) and `.zip` (Windows) release assets.
+# `reqwest` must be listed explicitly: self_update's `rustls` feature is
+# `["reqwest?/rustls", "ureq?/rustls"]`, which only *configures* a client that is
+# already enabled. With `default-features = false` and `rustls` alone, no HTTP
+# client is compiled in at all and `http_client::get` does not exist.
+# rustls rather than the default native-tls so no platform needs an OpenSSL
+# toolchain; the archive features cover `.tar.gz` (macOS, Linux) and `.zip`
+# (Windows) release assets.
+self_update = { version = "0.44", default-features = false, features = [
+    "reqwest",
+    "rustls",
+    "archive-tar",
+    "archive-zip",
+    "compression-flate2",
+] }
+tempfile = "3.27.0"
+# Used directly by the updater rather than through `self_update`'s wrapper:
+# that wrapper's `http_client` module is private, so its header types are
+# unreachable and `Download` exposes no timeout — a stalled download would hang
+# the update thread indefinitely. Owning the client gives timeouts, a
+# User-Agent (which the GitHub API requires) and streaming progress.
+# Already in the tree as self_update's own client, so this costs no new deps.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "json",
+    "rustls",
+    "http2",
+] }
 
 # The native menu bar. macOS only: `init_for_nsapp` is app-global and needs
 # nothing from the windowing layer, whereas Windows needs a per-window HWND
 # (eframe exposes only the root, which this app hides) and Linux needs a GTK3
 # window that a winit/x11 app does not have. Those two draw an egui menu bar
 # instead — see `presentation::components::organisms::menu_bar`.
+# Decodes the embedded window icon at startup. Already in the tree as a
+# transitive dependency, so declaring it costs nothing new.
+png = "0.18"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.19"
+
+# Embeds `packaging/windows/AppIcon.ico` into the .exe as a Win32 resource, so
+# Explorer, the taskbar and alt-tab all show it. Nothing else can supply an icon
+# to a bare Windows executable.
+#
+# Target-specific *build*-dependencies are resolved against the host, which
+# matches how RELEASING.md builds: each platform's artifact on that platform.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 codegen-units = 1

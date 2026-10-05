@@ -12,18 +12,21 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 
 use crate::application::file_system_service::FileSystemService;
 use crate::application::graph_service::GraphService;
+use crate::application::ports::UpdaterPort;
 use crate::application::ports::{
     ClipboardPort, DoomPort, FileWatcherPort, ProjectFileSystemPort, ProjectGeneratorPort,
     TerminalPort,
 };
 use crate::application::recent_projects_service::RecentProjectsService;
 use crate::application::simulator_service::SimulatorService;
+use crate::application::update_service::{Trigger, UpdateService};
 use crate::domain::menu::{
     self, MenuCommand, MenuContext, MenuModel, MenuSurface, TransportCommand, WindowId,
 };
@@ -45,15 +48,16 @@ use crate::presentation::windows::{
 
 /// Cadence of the playhead/graph sync, matching the old UI timers.
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
-/// How long the mocked splash shows before auto-advancing to Initial.
-const SPLASH_DURATION: Duration = Duration::from_millis(1000);
+/// How long the splash stays up at minimum (S3).
+///
+/// No longer what *ends* the splash — the update check does that — but a floor,
+/// so an instant "up to date" does not make the window flash past.
+const SPLASH_DURATION: Duration = Duration::from_millis(600);
 /// How often the system clipboard is sampled for the Edit menu's Paste item.
 /// Reading it every frame would be a round-trip to the owning process a hundred
 /// times a second; on X11 that is a real cost for a menu row nobody is looking
 /// at.
 const CLIPBOARD_POLL: Duration = Duration::from_millis(500);
-/// Where Help ▸ HeadroomLab Help goes (D11).
-const HELP_URL: &str = "https://github.com/jesusherrera94/HeadroomLab#readme";
 
 /// Which top-level screen is active. One OS window at a time.
 enum Screen {
@@ -73,6 +77,10 @@ pub struct HeadroomApp {
     clipboard: Rc<dyn ClipboardPort>,
     terminal: Rc<dyn TerminalPort>,
     doom: Rc<dyn DoomPort>,
+    /// Held so a restart can be asked for after an install (D7). The service
+    /// owns the flow; this is only the handover.
+    updater: Arc<dyn UpdaterPort>,
+    updates: UpdateService,
     windows: WindowManager,
     /// Build & Run is waiting on a build: the simulator's window exists but is
     /// kept hidden until the build says whether it earned the right to appear.
@@ -96,6 +104,16 @@ pub struct HeadroomApp {
     quit_requested: bool,
     /// The About box (S5).
     about_open: bool,
+    /// A short message about the update flow, shown as a modal on the Editor —
+    /// the feedback a *manual* check needs and a launch-time one must not give.
+    update_notice: Option<String>,
+    /// A manual check is in flight, so its outcome should be reported.
+    manual_check_running: bool,
+    /// An install is waiting on the unsaved-work guard; the quit it produces is
+    /// a relaunch rather than an exit (D7).
+    pending_restart: bool,
+    /// Whether the launch check has been kicked off yet.
+    update_started: bool,
     /// The macOS menu bar. `None` off macOS, where each window draws its own.
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::presentation::native_menu::NativeMenu>,
@@ -125,6 +143,7 @@ impl HeadroomApp {
         clipboard: Rc<dyn ClipboardPort>,
         terminal: Rc<dyn TerminalPort>,
         doom: Rc<dyn DoomPort>,
+        updates: UpdateService,
     ) -> Self {
         Self {
             sim_service,
@@ -137,6 +156,8 @@ impl HeadroomApp {
             clipboard,
             terminal,
             doom,
+            updater: updates.updater(),
+            updates,
             windows: WindowManager::default(),
             simulator_awaiting_build: false,
             screen: Screen::Splash,
@@ -148,6 +169,10 @@ impl HeadroomApp {
             focused: WindowId::Splash,
             quit_requested: false,
             about_open: false,
+            update_notice: None,
+            manual_check_running: false,
+            pending_restart: false,
+            update_started: false,
             #[cfg(target_os = "macos")]
             native_menu: None,
             other_widget_focused: false,
@@ -264,6 +289,7 @@ impl HeadroomApp {
                 .map(|project| project.name.clone())
                 .collect(),
             can_paste: self.clipboard_ready,
+            updates_available: self.updates.is_enabled(),
             simulator_open: simulator.is_some(),
             graph_open: self.windows.graph.is_some(),
             doom_open: self.windows.doom.is_some(),
@@ -368,8 +394,13 @@ impl HeadroomApp {
                 None => self.initial.focus_requested = true,
             }
         }
+        if requests.check_for_updates {
+            self.manual_check_running = true;
+            self.update_notice = Some("Checking for updates…".to_owned());
+            self.updates.check_manually();
+        }
         if requests.open_help
-            && let Err(e) = opener::open_browser(HELP_URL)
+            && let Err(e) = opener::open_browser(crate::config::HELP_URL)
             && let Some(editor) = self.editor.as_mut()
         {
             editor.explorer.error = Some(format!("Could not open the documentation: {e}"));
@@ -478,13 +509,112 @@ impl HeadroomApp {
 
     // -- Splash ------------------------------------------------------------
 
+    /// The splash, which now waits on the updater rather than on a timer.
+    ///
+    /// It advances when the update flow settles *and* the minimum showing time
+    /// has passed (S3) — an "up to date" answer can arrive in well under a
+    /// frame, and a splash that flashes past reads as a glitch. A failure holds
+    /// the screen until "Continue anyways" is pressed (AC 5).
     fn show_splash(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        splash_window::show(ui);
-        if self.splash_started.elapsed() >= SPLASH_DURATION {
+        let events = splash_window::show(ui, self.updates.state());
+        if events.continue_anyway {
+            self.updates.acknowledge_failure();
+        }
+
+        let shown_long_enough = self.splash_started.elapsed() >= SPLASH_DURATION;
+        if self.updates.state().is_settled() && shown_long_enough {
             self.screen = Screen::Initial;
             self.initial.focus_requested = true;
             // Hide the root; the Initial child viewport keeps this `ui` alive.
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
+        }
+    }
+
+    /// Acts on whatever the update flow produced this frame.
+    ///
+    /// The one place the restart signal is consumed, so the splash and the
+    /// Editor cannot each take half of it.
+    fn handle_update_outcome(&mut self) {
+        // A manual check that found something installs it. The *restart* is what
+        // waits for the user (D7), not the download.
+        if self.updates.trigger() == Trigger::Manual
+            && self.updates.pending_release().is_some()
+            && !self.updates.is_running()
+        {
+            let version = self
+                .updates
+                .pending_release()
+                .map(|r| r.version.clone())
+                .unwrap_or_default();
+            self.update_notice = Some(format!("Downloading v{version}…"));
+            // No longer merely checking, so the "you are up to date" report must
+            // not fire when this install finishes.
+            self.manual_check_running = false;
+            self.updates.install_found();
+        }
+
+        if let Some(version) = self.updates.take_restart_request() {
+            match self.screen {
+                // Nothing is open yet, so there is nothing to guard: hand over.
+                Screen::Splash | Screen::Initial => self.restart_into_update(),
+                // Work may be unsaved. Route the handover through the very same
+                // guard ⌘Q uses; `pending_restart` turns the resulting quit into
+                // a relaunch (D7).
+                Screen::Editor => {
+                    self.pending_restart = true;
+                    self.update_notice =
+                        Some(format!("v{version} is installed. Restarting HeadroomLab…"));
+                    self.request_quit();
+                }
+            }
+        }
+
+        // Tell the user how a check they asked for turned out. A launch-time
+        // check reports nothing, because they did not ask for it (D5).
+        if self.manual_check_running
+            && self.updates.trigger() == Trigger::Manual
+            && !self.updates.is_running()
+            && self.updates.pending_release().is_none()
+        {
+            self.manual_check_running = false;
+            // Only when the check genuinely came back clean. A failure has
+            // already been routed to the error banner below, and claiming
+            // "latest version" on top of it would contradict it.
+            if self.updates.state().is_settled() {
+                self.update_notice = Some(format!(
+                    "HeadroomLab v{} is the latest version.",
+                    env!("CARGO_PKG_VERSION")
+                ));
+            }
+        }
+
+        // A failed update raised from the Editor has no splash to show it on.
+        if self.updates.state().needs_acknowledgement()
+            && matches!(self.screen, Screen::Editor)
+            && let Some(editor) = self.editor.as_mut()
+        {
+            editor.explorer.error = Some(self.updates.state().status_line());
+            self.updates.acknowledge_failure();
+            self.manual_check_running = false;
+            self.update_notice = None;
+        }
+    }
+
+    /// Hands over to a freshly installed build.
+    ///
+    /// Only returns if the handover failed, in which case the error is shown
+    /// like any other and the user can carry on with the build they have.
+    fn restart_into_update(&mut self) {
+        match self.updater.restart() {
+            Ok(never) => match never {},
+            Err(e) => {
+                eprintln!("[updater] could not restart: {e}");
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.explorer.error = Some(format!(
+                        "The update was installed but the app could not restart: {e}\n\n                         Quit and reopen HeadroomLab to use the new version."
+                    ));
+                }
+            }
         }
     }
 
@@ -640,6 +770,11 @@ impl HeadroomApp {
         let about_open = self.about_open;
         let mut about_dismissed = false;
         let mut other_widget_focused = false;
+        let notice = self.update_notice.clone();
+        // While an update is actually working there is nothing to dismiss — an
+        // OK button that cancelled nothing would be a lie.
+        let notice_dismissable = !self.updates.state().is_working();
+        let mut notice_dismissed = false;
 
         ctx.show_viewport_immediate(
             viewport_id,
@@ -654,6 +789,8 @@ impl HeadroomApp {
 
                 if about_open {
                     about_dismissed = about_dialog(ui.ctx());
+                } else if let Some(text) = notice.as_deref() {
+                    notice_dismissed = notice_dialog(ui.ctx(), text, notice_dismissable);
                 }
 
                 // Sampled here, inside the Editor's viewport, because focus is
@@ -690,6 +827,12 @@ impl HeadroomApp {
         self.other_widget_focused = other_widget_focused;
         if about_dismissed {
             self.about_open = false;
+        }
+        if notice_dismissed {
+            self.update_notice = None;
+        }
+        if notice_dismissed {
+            self.update_notice = None;
         }
 
         // The toolbar's build buttons run their `make` target in the terminal's
@@ -988,6 +1131,17 @@ impl eframe::App for HeadroomApp {
         // one pass, so a single visible window keeps the whole tree ticking.
         ctx.request_repaint_after_for(TICK_INTERVAL, self.ticking_viewport(&ctx));
 
+        // The launch check starts on the first frame rather than in `new`, so
+        // nothing reaches the network before there is a window to show it in.
+        if !std::mem::replace(&mut self.update_started, true) {
+            self.updates.start_at_launch();
+        }
+
+        // Drain the update worker before anything renders, so the splash and the
+        // menu both see this frame's state rather than the last one's.
+        self.updates.tick();
+        self.handle_update_outcome();
+
         // One context per frame, shared by the native bar, every per-window bar
         // and the close handling — so all of them agree on what has focus and
         // what is enabled.
@@ -1023,6 +1177,11 @@ impl eframe::App for HeadroomApp {
         if self.quit_requested || ctx.input(|i| i.viewport().close_requested()) {
             self.quit_requested = false;
             self.windows.close_all();
+            // An install cleared the guard: the "quit" is a handover to the new
+            // build, and `restart_into_update` does not return on success.
+            if std::mem::take(&mut self.pending_restart) {
+                self.restart_into_update();
+            }
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Close);
         }
     }
@@ -1064,6 +1223,40 @@ fn window_title(project: Option<&RecentProject>, window: &str) -> String {
     match project {
         Some(project) => format!("{} — {}", project.name, window),
         None => window.to_string(),
+    }
+}
+
+/// A one-line note about the update flow.
+///
+/// The feedback a *manual* check owes the user: told nothing, they cannot tell
+/// "already current" from "the menu item is broken". Launch-time checks never
+/// raise one — that is D5's whole point.
+fn notice_dialog(ctx: &egui::Context, text: &str, dismissable: bool) -> bool {
+    let mut dismissed = false;
+    egui::Modal::new(egui::Id::new("update_notice")).show(ctx, |ui| {
+        ui.set_width(320.0);
+        ui.vertical_centered(|ui| {
+            ui.add_space(10.0);
+            ui.label(RichTextExt::body(text));
+            ui.add_space(14.0);
+            if ui
+                .add_enabled(dismissable, egui::Button::new("OK"))
+                .clicked()
+            {
+                dismissed = true;
+            }
+            ui.add_space(4.0);
+        });
+    });
+    dismissed
+}
+
+/// Small helper so the two dialogs style their body text the same way.
+struct RichTextExt;
+
+impl RichTextExt {
+    fn body(text: &str) -> egui::RichText {
+        egui::RichText::new(text).font(theme::body_font())
     }
 }
 

@@ -10,19 +10,87 @@ use HeadroomLab::{
         graph_service::GraphService,
         ports::{
             AudioEnginePort, ClipboardPort, DoomPort, FileWatcherPort, ProjectFileSystemPort,
-            ProjectGeneratorPort, TerminalPort,
+            ProjectGeneratorPort, TerminalPort, UpdaterPort,
         },
         recent_projects_service::RecentProjectsService,
         simulator_service::SimulatorService,
+        update_service::UpdateService,
     },
     infrastructure::{
-        audio_engine::AudioEngine, doom_engine::NeurodoomEngine,
+        audio_engine::AudioEngine, doom_engine::NeurodoomEngine, github_updater::GitHubUpdater,
         notify_file_watcher::NotifyFileWatcher, project_generator::TemplateProjectGenerator,
         pty_terminal::PtyTerminal, recent_projects_store::FileRecentProjectsStore,
         std_fs_project_file_system::StdFsProjectFileSystem, system_clipboard::SystemClipboard,
     },
     presentation::{app_controller::HeadroomApp, theme},
 };
+
+/// The window icon's artwork. 256×256: large enough for a HiDPI taskbar, small
+/// enough that decoding it at startup is not worth measuring.
+const ICON_PNG: &[u8] = include_bytes!("../packaging/icon-256.png");
+
+/// The same artwork at the 1024 master size, used on macOS because the Dock
+/// renders far larger than a taskbar and AppKit picks the size it wants out of
+/// one image. 30 KB of flat vector-ish artwork, so the resolution is near free.
+///
+/// Embedded on every platform, like `ICON_PNG`, so that both stay compiled and
+/// both stay covered by the tests below wherever those are run.
+const ICON_PNG_1024: &[u8] = include_bytes!("../packaging/icon.png");
+
+/// Decodes the embedded artwork.
+///
+/// Deliberately *not* behind a `cfg`, even though only two of the three
+/// platforms use the result: code excluded on the machine it is written on is
+/// code nobody compiles until it breaks someone else's build. Only the decision
+/// to *use* it is platform-specific.
+fn decode_icon(bytes: &[u8]) -> Option<eframe::egui::IconData> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    // Annotated rather than inferred: the element type would otherwise be
+    // deduced from `next_frame` below, which makes the whole function's types
+    // collapse the moment `png` fails to resolve.
+    let mut rgba: Vec<u8> = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut rgba).ok()?;
+
+    // eframe wants straight RGBA8. The generator writes exactly that, so
+    // anything else means the committed artwork was replaced with a different
+    // format — better a generic icon than a smear of misread bytes.
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        eprintln!("[icon] packaging/icon-256.png is not RGBA8; falling back to no icon");
+        return None;
+    }
+
+    rgba.truncate(info.buffer_size());
+    Some(eframe::egui::IconData {
+        rgba,
+        width: info.width,
+        height: info.height,
+    })
+}
+
+/// The icon for the **title bar, taskbar and alt-tab** — which is not the
+/// launcher icon: on Windows that comes from a resource inside the `.exe` (see
+/// `build.rs`) and on Linux from the `.desktop` entry. Both are needed, and
+/// neither supplies the other.
+///
+/// macOS reads no window icon at all — but this must still be `Some` there,
+/// because eframe *also* routes this value to `NSApplication`'s Dock tile and
+/// substitutes **its own egui logo** for a `None` (see
+/// `eframe::native::epi_integration`, which calls `load_default_egui_icon`).
+/// That substitution happens on the first frame, so handing it nothing does not
+/// leave the bundle's `CFBundleIconFile` alone: it briefly shows, then the egui
+/// hexagon replaces it. Passing the artwork here is what makes the Dock tile
+/// ours, and it covers the unbundled `cargo run` case that has no
+/// `CFBundleIconFile` to begin with.
+fn app_icon() -> Option<eframe::egui::IconData> {
+    // `cfg!` rather than `#[cfg]`: the Dock draws much larger than any taskbar,
+    // so macOS gets the master, but both arms keep compiling everywhere.
+    decode_icon(if cfg!(target_os = "macos") {
+        ICON_PNG_1024
+    } else {
+        ICON_PNG
+    })
+}
 
 fn main() -> eframe::Result<()> {
     // Compose dependencies (the only place that picks concrete impls)
@@ -41,12 +109,22 @@ fn main() -> eframe::Result<()> {
     let clipboard: Rc<dyn ClipboardPort> = Rc::new(SystemClipboard::new());
     let doom: Rc<dyn DoomPort> = Rc::new(NeurodoomEngine::new());
 
+    // The one port held as an `Arc` rather than an `Rc`: the updater blocks on
+    // network IO, so `UpdateWorker` runs it on a thread of its own.
+    let updater: std::sync::Arc<dyn UpdaterPort> = std::sync::Arc::new(GitHubUpdater::new());
+    let update_service = UpdateService::new(updater);
+
     // The root window is the Splash screen.
+    let mut viewport = ViewportBuilder::default()
+        .with_title("HeadroomLab")
+        .with_inner_size([380.0, 240.0])
+        .with_resizable(false);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_title("HeadroomLab")
-            .with_inner_size([380.0, 240.0])
-            .with_resizable(false),
+        viewport,
         ..Default::default()
     };
 
@@ -78,7 +156,47 @@ fn main() -> eframe::Result<()> {
                 clipboard,
                 terminal,
                 doom,
+                update_service,
             )))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The committed artwork has to be what the decoder expects. Replacing
+    /// `packaging/icon-256.png` with a palettised or RGB PNG would otherwise
+    /// only show up as a missing icon on a platform nobody is testing on.
+    #[test]
+    fn the_embedded_icon_decodes_to_256_square_rgba() {
+        let icon = decode_icon(ICON_PNG).expect("the committed icon should decode");
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        // A fully transparent icon would decode cleanly and show nothing.
+        assert!(
+            icon.rgba.chunks_exact(4).any(|px| px[3] > 0),
+            "the icon is entirely transparent"
+        );
+    }
+
+    /// The macOS Dock tile comes from the master, and it reaches AppKit through
+    /// the same decoder — so it needs the same guarantee.
+    #[test]
+    fn the_embedded_master_decodes_to_1024_square_rgba() {
+        let icon = decode_icon(ICON_PNG_1024).expect("the committed master should decode");
+        assert_eq!((icon.width, icon.height), (1024, 1024));
+        assert_eq!(icon.rgba.len(), 1024 * 1024 * 4);
+        assert!(
+            icon.rgba.chunks_exact(4).any(|px| px[3] > 0),
+            "the master icon is entirely transparent"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_icon_yields_no_icon_rather_than_a_panic() {
+        assert!(decode_icon(b"not a png").is_none());
+        assert!(decode_icon(&[]).is_none());
+    }
 }

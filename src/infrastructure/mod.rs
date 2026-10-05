@@ -2,6 +2,7 @@ pub(crate) mod audio_decoder;
 pub mod audio_engine;
 pub mod doom_engine;
 pub mod dylib_plugin;
+pub mod github_updater;
 pub mod hothouse_hal;
 pub mod notify_file_watcher;
 pub mod project_generator;
