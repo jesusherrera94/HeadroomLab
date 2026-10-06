@@ -1,7 +1,3 @@
-//! `notify`-backed adapter for `FileWatcherPort`. Watches a project tree
-//! recursively and forwards only structural changes (create / remove / rename)
-//! through a channel, so the explorer can refresh the affected directories.
-//! Content-only writes are filtered out to avoid churn during builds.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -26,10 +22,7 @@ impl Default for NotifyFileWatcher {
     }
 }
 
-/// Owns the live `notify` watcher (dropping it stops the background thread) and
-/// the receiving end of the change channel.
 struct NotifySession {
-    // Kept alive for its `Drop`; the concrete type is hidden behind the trait.
     _watcher: notify::RecommendedWatcher,
     changes: Receiver<PathBuf>,
 }
@@ -40,7 +33,6 @@ impl FileWatchSession for NotifySession {
     }
 }
 
-/// Only structural changes alter what the tree displays; skip content writes.
 fn is_structural(kind: &EventKind) -> bool {
     matches!(
         kind,
@@ -58,7 +50,6 @@ impl FileWatcherPort for NotifyFileWatcher {
                     && is_structural(&event.kind)
                 {
                     for path in event.paths {
-                        // A closed receiver just means the editor went away.
                         let _ = tx.send(path);
                     }
                 }

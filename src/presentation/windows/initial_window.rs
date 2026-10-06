@@ -1,6 +1,3 @@
-//! Initial window: header (logo + title + subtitle), Create/Open actions, and
-//! the Recent-projects list. The Create modal renders on top when open.
-
 use eframe::egui::{self, RichText};
 
 use crate::domain::project::RecentProject;
@@ -30,7 +27,6 @@ pub fn show(
     egui::CentralPanel::default().show(ui, |ui| {
         ui.add_space(8.0);
 
-        // Header: logo tile + title + subtitle.
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             logo::logo_tile(ui, 44.0);
@@ -51,7 +47,6 @@ pub fn show(
 
         ui.add_space(16.0);
 
-        // Actions row.
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             let full = ui.available_width() - 8.0;
@@ -72,7 +67,6 @@ pub fn show(
 
         ui.add_space(16.0);
 
-        // Recent section.
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             ui.label(
@@ -101,7 +95,6 @@ pub fn show(
         }
     });
 
-    // Create modal on top of the window.
     if state.modal_open {
         let validation = initial_controller::create_validation(&state.name, &state.path);
         let generation_error = state.generation_error.clone();

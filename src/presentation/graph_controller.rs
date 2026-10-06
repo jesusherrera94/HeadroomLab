@@ -8,14 +8,11 @@ use crate::application::graph_worker::GraphComputeWorker;
 use crate::presentation::components::organisms::plot_grid::PaneResets;
 
 pub struct GraphSession {
-    /// Dropping the session (window closed) disconnects the job channel and
-    /// cleanly shuts the worker thread down.
     worker: GraphComputeWorker,
     pub cached: Option<GraphData>,
     pub has_processed: bool,
     pub processed_status: String,
     pub resets: PaneResets,
-    /// Set to bring the OS window to the front on the next frame.
     pub focus_requested: bool,
     time_full_end: f32,
     last_full_end: f32,
@@ -23,7 +20,6 @@ pub struct GraphSession {
 
 impl GraphSession {
     pub fn open(graph_service: &GraphService) -> Self {
-        // The first result arrives asynchronously via `tick`.
         graph_service.mark_params_dirty();
         Self {
             worker: GraphComputeWorker::spawn(),
@@ -37,22 +33,16 @@ impl GraphSession {
         }
     }
 
-    /// Full extent of the time panes' x-axis (the track duration in seconds).
     pub fn time_full_end(&self) -> f32 {
         self.time_full_end
     }
 
-    /// Per-frame sync, replacing the previous 100ms UI timer: applies finished
-    /// worker results and submits the next job when idle and dirty.
     pub fn tick(&mut self, graph_service: &GraphService) {
         if let Some(data) = self.worker.try_recv_result() {
             self.apply_metadata(Some(&data));
             self.cached = Some(data);
         }
 
-        // One job in flight at most: while a knob is being dragged the dirty
-        // flag stays set, so the next job (with the newest control snapshot)
-        // is submitted as soon as the previous result lands (latest-wins).
         if self.worker.is_idle() && graph_service.take_dirty() {
             match graph_service.build_request() {
                 Some(request) => self.worker.submit(request),
@@ -61,10 +51,6 @@ impl GraphSession {
         }
     }
 
-    /// Updates the non-plot state (status text, full-range bounds) and resets
-    /// the visible view to the full range only when the track's duration
-    /// actually changes (e.g. a new file was loaded) — turning a knob must
-    /// never yank the user's current zoom/pan back to the full view.
     fn apply_metadata(&mut self, data: Option<&GraphData>) {
         match data {
             Some(d) => {

@@ -1,18 +1,3 @@
-//! The [`UpdaterPort`] against GitHub Releases.
-//!
-//! `self_update` is used as a library of parts rather than through its one-call
-//! `Update::update()`, for two reasons the refinement records:
-//!
-//! * that call reports progress only as an `indicatif` bar on **stdout**, so a
-//!   GUI cannot show a filling bar (AC 2);
-//! * it replaces a single executable file, which a macOS `.app` is not (D2).
-//!
-//! So this module owns the pipeline — query, download, extract, install — and
-//! borrows `self_update`'s `Download`, `Extract` and `self_replace`. The release
-//! query is ours because `ReleaseAsset` carries no byte size, and without a size
-//! there is no determinate progress bar (D9).
-//!
-//! Everything here blocks. It only ever runs on `UpdateWorker`'s thread.
 
 use std::fs;
 use std::io::{self, Write};
@@ -25,12 +10,8 @@ use crate::domain::update::{
     ReleaseInfo, UpdateError, asset_name, current_target, is_newer, select_asset,
 };
 
-/// GitHub wants a User-Agent on every API call and refuses the request without
-/// one.
 const USER_AGENT: &str = concat!("HeadroomLab/", env!("CARGO_PKG_VERSION"));
 
-/// How long a download may take. Far longer than the check's budget — the check
-/// is a question nobody asked, but a download is something the user is watching.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub struct GitHubUpdater {
@@ -83,8 +64,6 @@ impl UpdaterPort for GitHubUpdater {
         }
         let version = tag.trim_start_matches(['v', 'V']).to_owned();
 
-        // Assets carry the size we need for a determinate bar, which is exactly
-        // what self_update's own `ReleaseAsset` model drops.
         let assets = body
             .get("assets")
             .and_then(|v| v.as_array())
@@ -107,9 +86,6 @@ impl UpdaterPort for GitHubUpdater {
             .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(chosen))
             .ok_or_else(|| UpdateError::Network("the chosen asset vanished".into()))?;
 
-        // `browser_download_url` rather than the API `url`: the latter needs an
-        // Accept: application/octet-stream header to return bytes instead of
-        // JSON, and this repo's releases are public.
         let asset_url = asset
             .get("browser_download_url")
             .and_then(|v| v.as_str())
@@ -129,8 +105,6 @@ impl UpdaterPort for GitHubUpdater {
         release: &ReleaseInfo,
         on_progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
     ) -> Result<(), UpdateError> {
-        // Everything lands in one temp dir that is removed when this returns,
-        // however it returns.
         let staging = tempfile::Builder::new()
             .prefix("headroomlab-update-")
             .tempdir_in(staging_parent()?)
@@ -155,12 +129,6 @@ impl UpdaterPort for GitHubUpdater {
     }
 }
 
-/// Where the staging directory goes.
-///
-/// **Beside the thing being replaced**, not in `/tmp`. The install step finishes
-/// with a rename, and a rename cannot cross filesystems — on macOS in particular
-/// `/tmp` and `/Applications` are routinely different volumes, and a cross-device
-/// rename fails with `EXDEV` after the whole download has been paid for.
 fn staging_parent() -> Result<PathBuf, UpdateError> {
     let exe = std::env::current_exe()
         .map_err(|e| UpdateError::Unsupported(format!("cannot locate this executable: {e}")))?;
@@ -172,11 +140,6 @@ fn staging_parent() -> Result<PathBuf, UpdateError> {
         .ok_or_else(|| UpdateError::Unsupported("this executable has no parent directory".into()))
 }
 
-/// The `.app` this executable lives in, if it lives in one.
-///
-/// `current_exe()` inside a bundle is `…/HeadroomLab.app/Contents/MacOS/Name`,
-/// so the bundle is three levels up. The suffix is checked rather than assumed:
-/// a bare binary that merely happens to sit three levels deep is not a bundle.
 fn macos_bundle_root(exe: &Path) -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
@@ -185,7 +148,6 @@ fn macos_bundle_root(exe: &Path) -> Option<PathBuf> {
     (root.extension()?.eq_ignore_ascii_case("app")).then(|| root.to_path_buf())
 }
 
-/// Streams `url` to `dest`, reporting bytes as they land.
 fn download(
     url: &str,
     dest: &Path,
@@ -205,16 +167,11 @@ fn download(
         )));
     }
 
-    // Prefer the size the release metadata gave us; fall back to whatever the
-    // response admits to. Either may be absent, which leaves the bar
-    // indeterminate rather than wrong.
     let total = expected_size.or_else(|| response.content_length());
 
     let file = fs::File::create(dest)
         .map_err(|e| UpdateError::Download(format!("could not write the download: {e}")))?;
 
-    // The counting writer is the whole reason this is not one `Update::update()`
-    // call: it is the only place a byte total can be observed (AC 2).
     let mut counter = ProgressWriter {
         inner: io::BufWriter::new(file),
         written: 0,
@@ -233,7 +190,6 @@ fn download(
     Ok(())
 }
 
-/// A writer that reports what has passed through it.
 struct ProgressWriter<'a, W: Write> {
     inner: W,
     written: u64,
@@ -254,10 +210,6 @@ impl<W: Write> Write for ProgressWriter<'_, W> {
     }
 }
 
-// -- The install step -----------------------------------------------------
-
-/// Puts the freshly extracted build in place. The one part that differs per
-/// platform (D2).
 #[cfg(target_os = "macos")]
 fn install(unpacked: &Path) -> Result<(), UpdateError> {
     let exe = std::env::current_exe()
@@ -275,21 +227,8 @@ fn install(unpacked: &Path) -> Result<(), UpdateError> {
     swap_bundle(&current, &new_bundle)
 }
 
-/// Replaces the bundle at `current` with the one at `new_bundle`.
-///
-/// Split out from [`install`] so the riskiest step in this story — the one that
-/// moves the user's application around — can be tested against real directories
-/// instead of only ever running for the first time on someone's machine.
-///
-/// Two renames rather than a delete-then-move: at no point is there *no* app at
-/// `current`, so a failure between them still leaves something runnable behind.
-/// The running process keeps its own inode alive, so moving its own bundle out
-/// from under it is safe.
 #[cfg(target_os = "macos")]
 fn swap_bundle(current: &Path, new_bundle: &Path) -> Result<(), UpdateError> {
-    // Refuse early and clearly rather than half-swapping a bundle we cannot
-    // finish replacing — an app in /Applications installed by another user is
-    // the ordinary way to reach this.
     let parent = current
         .parent()
         .ok_or_else(|| UpdateError::Install("the app has no parent directory".into()))?;
@@ -306,16 +245,12 @@ fn swap_bundle(current: &Path, new_bundle: &Path) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Install(format!("could not move the old app aside: {e}")))?;
 
     if let Err(e) = fs::rename(new_bundle, current) {
-        // Put it back: a failure here would otherwise leave no app at all.
         let _ = fs::rename(&retired, current);
         return Err(UpdateError::Install(format!(
             "could not move the new app into place: {e}"
         )));
     }
 
-    // Best-effort. The old bundle is still open by this process, and on some
-    // filesystems that is enough to refuse the removal; it is cleaned up on the
-    // next launch instead.
     let _ = fs::remove_dir_all(&retired);
     Ok(())
 }
@@ -328,8 +263,6 @@ fn install(unpacked: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// The `.app` inside an extracted archive, at the top level or one directory in
-/// (a tarball made from a parent folder).
 #[cfg(target_os = "macos")]
 fn find_bundle(root: &Path) -> Result<PathBuf, UpdateError> {
     fn scan(dir: &Path, depth: usize) -> Option<PathBuf> {
@@ -357,7 +290,6 @@ fn find_bundle(root: &Path) -> Result<PathBuf, UpdateError> {
         .ok_or_else(|| UpdateError::Extract("the download contained no HeadroomLab.app".into()))
 }
 
-/// The replacement binary inside an extracted archive.
 #[cfg(not(target_os = "macos"))]
 fn find_executable(root: &Path) -> Result<PathBuf, UpdateError> {
     let wanted = if cfg!(target_os = "windows") {
@@ -400,19 +332,12 @@ fn is_read_only(dir: &Path) -> bool {
     fs::metadata(dir).is_ok_and(|m| m.permissions().readonly())
 }
 
-// -- Restart --------------------------------------------------------------
-
-/// Hands over to the installed build. Does not return on success.
 fn restart_now() -> Result<std::convert::Infallible, UpdateError> {
     use std::process::Command;
 
     let exe = std::env::current_exe()
         .map_err(|e| UpdateError::Unsupported(format!("cannot locate this executable: {e}")))?;
 
-    // On macOS the bundle is relaunched through `open`, not by exec'ing the
-    // inner binary: only LaunchServices gives the new process its bundle
-    // identity — dock icon, menu-bar name, activation. `-n` forces a new
-    // instance rather than reactivating the one that is on its way out.
     #[cfg(target_os = "macos")]
     if let Some(bundle) = macos_bundle_root(&exe) {
         Command::new("/usr/bin/open")
@@ -429,9 +354,6 @@ fn restart_now() -> Result<std::convert::Infallible, UpdateError> {
     std::process::exit(0);
 }
 
-/// A blocking client that will not wait forever.
-///
-/// The User-Agent is not optional: the GitHub API rejects requests without one.
 fn client(timeout: Duration) -> Result<reqwest::blocking::Client, UpdateError> {
     reqwest::blocking::Client::builder()
         .timeout(timeout)
@@ -440,7 +362,6 @@ fn client(timeout: Duration) -> Result<reqwest::blocking::Client, UpdateError> {
         .map_err(|e| UpdateError::Network(e.to_string()))
 }
 
-/// Fetches and parses a JSON body, with a timeout.
 fn get_json(url: &str, timeout: Duration) -> Result<serde_json::Value, UpdateError> {
     let response = client(timeout)?
         .get(url)
@@ -477,7 +398,6 @@ mod tests {
         );
     }
 
-    /// The bundle probe must not mistake any three-deep path for a bundle.
     #[test]
     #[cfg(target_os = "macos")]
     fn only_a_dot_app_ancestor_counts_as_a_bundle() {
@@ -521,8 +441,6 @@ mod tests {
         );
     }
 
-    /// A staging directory beside the app is what makes the final rename a
-    /// rename rather than an EXDEV failure.
     #[test]
     fn staging_sits_beside_the_thing_being_replaced() {
         let parent = staging_parent().expect("this test binary has a parent directory");
@@ -571,8 +489,6 @@ mod tests {
         assert_eq!(find_bundle(dir.path()).unwrap(), bundle);
     }
 
-    /// Builds a `.app`-shaped directory whose executable holds `marker`, so a
-    /// swap can be told to have happened.
     #[cfg(target_os = "macos")]
     fn fake_bundle(at: &Path, marker: &str) -> PathBuf {
         let bundle = at.join("HeadroomLab.app");
@@ -603,16 +519,12 @@ mod tests {
         );
     }
 
-    /// The rollback. If the second rename fails there must still be an app where
-    /// the user left one.
     #[test]
     #[cfg(target_os = "macos")]
     fn a_failed_swap_puts_the_old_bundle_back() {
         let installed = tempfile::tempdir().unwrap();
         let current = fake_bundle(installed.path(), "old");
 
-        // A source that does not exist makes the second rename fail, which is
-        // the window this rollback exists for.
         let missing = installed.path().join("nowhere/HeadroomLab.app");
 
         let result = swap_bundle(&current, &missing);
@@ -625,7 +537,6 @@ mod tests {
         );
     }
 
-    /// A stale `.app.old` from an earlier update must not block the next one.
     #[test]
     #[cfg(target_os = "macos")]
     fn a_leftover_retired_bundle_does_not_block_a_later_swap() {
@@ -635,7 +546,6 @@ mod tests {
         let current = fake_bundle(installed.path(), "old");
         let incoming = fake_bundle(staged.path(), "new");
 
-        // Left behind because the process still had it open last time.
         let stale = current.with_extension("app.old");
         fs::create_dir_all(stale.join("Contents/MacOS")).unwrap();
         fs::write(stale.join("Contents/MacOS/HeadroomLab"), "ancient").unwrap();

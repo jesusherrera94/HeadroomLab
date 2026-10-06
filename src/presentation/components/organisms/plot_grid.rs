@@ -1,14 +1,9 @@
-//! The 2x2 grid of signal plots (Original/Processed x Time/Frequency) plus the
-//! inline status line shown while no processed signal is available.
-
 use eframe::egui::{self, RichText};
 
 use crate::application::graph_service::GraphData;
 use crate::presentation::components::molecules::plot_pane::{spectrum_pane, waveform_pane};
 use crate::presentation::theme;
 
-/// Per-pane "snap back to the full range next frame" flags. Set all four when
-/// a new track is loaded; each pane's own Reset view button sets just one.
 pub struct PaneResets {
     pub orig_time: bool,
     pub orig_freq: bool,
@@ -18,7 +13,6 @@ pub struct PaneResets {
 
 impl Default for PaneResets {
     fn default() -> Self {
-        // Start at the full view, like the window's original initial properties.
         Self {
             orig_time: true,
             orig_freq: true,

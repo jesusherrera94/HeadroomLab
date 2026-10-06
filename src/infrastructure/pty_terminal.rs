@@ -1,22 +1,3 @@
-//! `TerminalPort` over `alacritty_terminal`: PTY spawn, the reader thread, and
-//! VTE emulation.
-//!
-//! The crate provides more than the name suggests — `tty` (openpty on unix,
-//! **ConPTY** on Windows), an `event_loop` that owns the reader thread and the
-//! parser, and `Term`, the grid model. What this adapter adds is the two edges:
-//! turning alacritty's `Event`s into port-level [`TerminalEvent`]s, and
-//! resolving a frame of the grid into a neutral [`TerminalSnapshot`].
-//!
-//! **Threading.** `Term` lives behind alacritty's own `FairMutex`, shared
-//! between the reader thread and the UI thread. The UI locks it once per frame
-//! to take a snapshot; the reader holds it while parsing. `FairMutex` is what
-//! stops a chatty child (`yes`, a long build) from starving the UI of the lock.
-//!
-//! **Repaint.** Output arrives asynchronously, so something has to tell egui to
-//! repaint. Rather than hold an `egui::Context` here — no other adapter in
-//! `infrastructure` knows about the UI framework — the wake-up is injected as a
-//! plain callback that `main.rs` fills in.
-
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -38,8 +19,6 @@ use crate::domain::terminal::{
     TerminalSnapshot, indexed_color,
 };
 
-/// Called from the reader thread when new output lands, so the UI repaints
-/// without waiting for its next tick.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 pub struct PtyTerminal {
@@ -63,8 +42,6 @@ impl TerminalPort for PtyTerminal {
         let options = Options {
             shell: Some(Shell::new(shell.program.clone(), shell.args.clone())),
             working_directory: Some(cwd.to_path_buf()),
-            // The child's last words matter most when it died — a failed build's
-            // final error line must not be lost to the shutdown.
             drain_on_exit: true,
             ..Default::default()
         };
@@ -113,8 +90,6 @@ impl TerminalSession for PtySession {
     }
 
     fn resize(&self, size: TerminalSize) {
-        // Both halves have to hear about it: the child, so `ioctl(TIOCGWINSZ)`
-        // reports the truth, and the grid, so it reflows to match.
         let _ = self.notifier.0.send(Msg::Resize(window_size(size)));
         self.term.lock().resize(SizeInfo::from(size));
     }
@@ -126,10 +101,6 @@ impl TerminalSession for PtySession {
 
     fn logical_text(&self) -> String {
         let term = self.term.lock();
-        // `bounds_to_string` walks the grid rejoining rows whose last cell
-        // carries `Flags::WRAPLINE`, which is the same path alacritty's own
-        // copy-to-clipboard takes. Spanning `topmost_line`..`bottommost_line`
-        // covers the scrollback as well as the screen.
         let start = Point::new(term.topmost_line(), Column(0));
         let end = Point::new(term.bottommost_line(), term.last_column());
         term.bounds_to_string(start, end)
@@ -147,8 +118,6 @@ impl TerminalSession for PtySession {
     fn clear(&self) {
         use alacritty_terminal::vte::ansi::{ClearMode, Handler};
         let mut term = self.term.lock();
-        // Both halves: the screen the user is looking at, and the history behind
-        // it. Clearing only one leaves the other to scroll back into view.
         term.clear_screen(ClearMode::All);
         term.clear_screen(ClearMode::Saved);
     }
@@ -178,15 +147,11 @@ impl TerminalSession for PtySession {
 }
 
 impl Drop for PtySession {
-    /// Ends the child and lets the reader thread wind down, so closing a tab or
-    /// a project never leaves an orphaned shell behind.
     fn drop(&mut self) {
         let _ = self.notifier.0.send(Msg::Shutdown);
     }
 }
 
-/// Translates alacritty's events into the port's vocabulary and pokes the UI
-/// awake. Cloned once — the `Term` and the `EventLoop` each hold one.
 #[derive(Clone)]
 struct Proxy {
     tx: Sender<TerminalEvent>,
@@ -202,14 +167,10 @@ impl EventListener for Proxy {
             Event::ClipboardStore(_, text) => Some(TerminalEvent::ClipboardStore(text)),
             Event::ClipboardLoad(..) => Some(TerminalEvent::ClipboardLoad),
             Event::Bell => Some(TerminalEvent::Bell),
-            // Cursor blink, title resets, colour and size queries: nothing this
-            // renderer acts on.
             _ => None,
         };
 
         if let Some(event) = translated {
-            // A closed receiver means the session was dropped; the reader thread
-            // is on its way out and there is nobody left to tell.
             if self.tx.send(event).is_ok() {
                 (self.wake)();
             }
@@ -217,8 +178,6 @@ impl EventListener for Proxy {
     }
 }
 
-/// Copies the visible screen into neutral types, resolving every colour to RGB
-/// on the way out so `presentation` never sees an ANSI colour code.
 fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapshot {
     let cols = term.columns() as u16;
     let rows = term.screen_lines() as u16;
@@ -234,12 +193,6 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
     let mut cells = vec![default; cols as usize * rows as usize];
 
     let selection = content.selection;
-    // `display_iter` yields *grid* coordinates, whose lines run negative into
-    // the scrollback. A viewport row is `grid line + display_offset` — the same
-    // translation alacritty's own renderer applies (`point_to_viewport`).
-    // Without it, scrolling back would discard every history row (negative
-    // line) and leave the bottom `display_offset` rows blank instead of moving
-    // the text.
     let display_offset = content.display_offset as i32;
     for item in content.display_iter {
         let line = item.point.line.0 + display_offset;
@@ -249,7 +202,6 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
         }
 
         let flags = item.cell.flags;
-        // Hidden text (`\e[8m`, as password prompts use) renders as blanks.
         let c = if flags.contains(Flags::HIDDEN) {
             ' '
         } else {
@@ -258,7 +210,6 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
 
         let mut fg = resolve(item.cell.fg, palette, content.colors);
         let mut bg = resolve(item.cell.bg, palette, content.colors);
-        // Dim applies to the foreground only, and only when it is not also bold.
         if flags.contains(Flags::DIM) && !flags.contains(Flags::BOLD) {
             fg = dimmed(fg);
         }
@@ -283,9 +234,6 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
         };
     }
 
-    // The cursor is only drawn when it is on screen and not hidden — scrolling
-    // back into history pushes its viewport row past `rows`, so no caret is
-    // left floating over old output.
     let cursor_point = content.cursor.point;
     let cursor_line = cursor_point.line.0 + display_offset;
     let cursor = (content.cursor.shape != alacritty_terminal::vte::ansi::CursorShape::Hidden
@@ -304,9 +252,6 @@ fn snapshot_of(term: &Term<Proxy>, palette: &TerminalPalette) -> TerminalSnapsho
     }
 }
 
-/// One ANSI colour to RGB. OSC-set overrides in `colors` win; otherwise the
-/// theme's palette answers for the 16 named colours and the xterm cube for the
-/// rest.
 fn resolve(
     color: Color,
     palette: &TerminalPalette,
@@ -325,13 +270,6 @@ fn resolve(
     }
 }
 
-/// The theme's colour for a named ANSI slot. The dim variants are folded onto
-/// their normal counterparts and darkened, which is what terminals without a
-/// separate dim palette do.
-///
-/// Matched exhaustively on purpose: `NamedColor` is a closed enum, so a future
-/// alacritty adding a slot should fail the build here rather than silently
-/// render it as the default colour.
 fn named_color(named: NamedColor, palette: &TerminalPalette) -> Rgb {
     use NamedColor as N;
     match named {
@@ -368,7 +306,6 @@ fn named_color(named: NamedColor, palette: &TerminalPalette) -> Rgb {
     }
 }
 
-/// Two-thirds intensity, the conventional rendering of `\e[2m`.
 fn dimmed(rgb: Rgb) -> Rgb {
     Rgb::new(
         (rgb.r as u16 * 2 / 3) as u8,
@@ -377,8 +314,6 @@ fn dimmed(rgb: Rgb) -> Rgb {
     )
 }
 
-/// A viewport `(col, row)` as a point in the grid's own coordinates, which count
-/// lines from the top of the *screen* and go negative into the scrollback.
 fn grid_point(cell: (u16, u16), display_offset: usize, term: &Term<Proxy>) -> Point {
     let (col, row) = cell;
     let line = row as i32 - display_offset as i32;
@@ -395,8 +330,6 @@ fn window_size(size: TerminalSize) -> WindowSize {
     }
 }
 
-/// `Dimensions` for a grid that has no scrollback of its own — alacritty asks
-/// for this when constructing and resizing a `Term`.
 struct SizeInfo {
     cols: usize,
     rows: usize,
@@ -449,7 +382,6 @@ mod tests {
         }
     }
 
-    /// Reads the whole visible grid as text, trimmed per row.
     fn screen_text(session: &dyn TerminalSession) -> String {
         let snapshot = session.snapshot();
         (0..snapshot.rows)
@@ -466,8 +398,6 @@ mod tests {
             .join("\n")
     }
 
-    /// Spins until `done`, draining events, for at most a second. A real PTY is
-    /// asynchronous; the alternative is a flaky fixed sleep.
     fn wait_for(
         session: &dyn TerminalSession,
         events: &mut Vec<TerminalEvent>,
@@ -484,9 +414,6 @@ mod tests {
         false
     }
 
-    /// The one test worth running over a real PTY: a fake here would only prove
-    /// the fake works. Runs a trivial command and checks that its output reaches
-    /// the grid and that its exit status comes back.
     #[test]
     #[cfg(unix)]
     fn a_session_runs_a_command_and_reports_its_exit_status() {
@@ -524,12 +451,6 @@ mod tests {
         );
     }
 
-    /// A failed build's diagnostics must still be on screen after the child is
-    /// gone — that output *is* the reason to look at the panel.
-    ///
-    /// Two things make it work and both are load-bearing: `drain_on_exit` in
-    /// `open`, which reads the last bytes before the reader shuts down, and
-    /// keeping the `Term` alive after `ChildExit`.
     #[test]
     #[cfg(unix)]
     fn output_survives_the_child_that_produced_it() {
@@ -556,21 +477,14 @@ mod tests {
             screen_text(session.as_ref())
         );
 
-        // And it is still there on a later read, not just once.
         assert!(screen_text(session.as_ref()).contains("error: undefined reference"));
         assert!(events.contains(&TerminalEvent::ChildExit(Some(2))));
     }
 
-    /// Regression: `display_iter` yields grid coordinates, which have to be
-    /// shifted by `display_offset` into viewport rows. Forgetting the shift
-    /// makes scrolling back *drop* the history rows (their grid lines are
-    /// negative) and leave the bottom of the panel blank — the "black box over
-    /// a log that will not scroll" bug.
     #[test]
     #[cfg(unix)]
     fn scrolling_back_shows_history_instead_of_a_blank_gap() {
         let terminal = PtyTerminal::new(Arc::new(|| {}));
-        // 30 lines into an 8-row grid: 22 of them end up in the scrollback.
         let shell = ShellChoice::new(
             "/bin/sh",
             &[
@@ -612,19 +526,12 @@ mod tests {
         );
     }
 
-    /// The whole reason diagnostics are parsed from `logical_text` rather than
-    /// from the rendered grid: a compiler error is far longer than the panel is
-    /// wide, so the emulator hard-wraps it across rows. `bounds_to_string`
-    /// rejoins them via `Flags::WRAPLINE`, and only then does `file:line:col`
-    /// still match.
     #[test]
     #[cfg(unix)]
     fn a_line_wider_than_the_grid_is_rejoined_for_parsing() {
         use crate::domain::diagnostics::{Severity, parse_diagnostics};
 
         let terminal = PtyTerminal::new(Arc::new(|| {}));
-        // 40 columns wide (see `size()`), so this ~120-character diagnostic is
-        // wrapped over three rows on screen.
         let long_path = "src/very/deeply/nested/directory/effect_processor.cpp";
         let message = "use of undeclared identifier 'cutof'; did you mean 'cutoff'?";
         let line = format!("{long_path}:14:24: error: {message}");
@@ -647,8 +554,6 @@ mod tests {
             session.logical_text()
         );
 
-        // The rendered grid really did split it — otherwise this test proves
-        // nothing about rejoining.
         let rendered = screen_text(session.as_ref());
         assert!(
             !rendered.lines().any(|row| row.contains(&line)),
@@ -687,12 +592,6 @@ mod tests {
         );
     }
 
-    /// The production path end to end: the shell this machine actually resolves
-    /// to, opened through the port, driven by bytes written the way the panel
-    /// writes them, and reporting the exit code the build integration relies on.
-    ///
-    /// Deterministic despite using a real interactive shell: `exit 7` does not
-    /// depend on what the user's rc files print.
     #[test]
     #[cfg(unix)]
     fn the_real_default_shell_opens_accepts_input_and_reports_its_exit_code() {
@@ -730,9 +629,6 @@ mod tests {
         let shell = ShellChoice::new("/nonexistent/definitely-not-a-shell", &[]);
         let opened = terminal.open(&shell, Path::new("/"), size(), test_palette());
 
-        // Unix reports this at spawn; ConPTY may only fail once the child runs,
-        // in which case the session opens and immediately exits. Either is a
-        // reported failure rather than a panic, which is what matters here.
         if let Err(error) = opened {
             assert!(
                 error.0.contains("definitely-not-a-shell"),

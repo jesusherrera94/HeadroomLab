@@ -1,22 +1,6 @@
-//! Pure editing policy: what the code editor's commands *mean*, expressed as
-//! functions over text and character ranges.
-//!
-//! No IO and no egui here — the key bindings that raise an [`EditorCommand`] and
-//! the widget state that applies an [`Edit`] both live in `presentation`. Sits
-//! next to `text_document.rs`, which answers the neighbouring question (what a
-//! file's bytes may become, and how typing indents); this module answers what
-//! happens once the buffer is open.
-//!
-//! **Every offset in this module is a character offset**, never a byte offset —
-//! that is the model egui's cursors use, and the one `line_col_at` and
-//! [`find_matches`] already speak. Byte offsets appear only inside the private
-//! helpers that splice `String`s.
 
 use std::ops::Range;
 
-/// An action the user asked the code editor to perform, from a key chord or the
-/// context menu. The two entry points produce the same vocabulary so they cannot
-/// drift apart in behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorCommand {
     Undo,
@@ -25,50 +9,26 @@ pub enum EditorCommand {
     Copy,
     Paste,
     SelectAll,
-    /// Select the cursor's line; extend by one line if it is already selected.
     SelectLine,
-    /// Select the word under the cursor, then each following occurrence.
     SelectNextOccurrence,
-    /// Comment or uncomment every line the selection touches.
     ToggleComment,
-    /// Copy every line the selection touches directly below itself.
     DuplicateLine,
-    /// Remove every line the selection touches, taking a line break with it.
     DeleteLine,
 }
 
-/// A replacement to splice into the buffer, plus where the selection should land
-/// afterwards. Returned rather than applied so the caller can record one undo
-/// step around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
-    /// The character range to replace.
     pub range: Range<usize>,
     pub replacement: String,
-    /// The character range to select once the replacement is in. An empty range
-    /// is a plain caret.
     pub cursor_after: Range<usize>,
 }
 
-/// Splices `edit` into `text`. The single place a character range is converted
-/// to the byte range `String::replace_range` needs.
 pub fn apply(text: &mut String, edit: &Edit) {
     let start = byte_of_char(text, edit.range.start);
     let end = byte_of_char(text, edit.range.end);
     text.replace_range(start..end, &edit.replacement);
 }
 
-// ---------------------------------------------------------------------------
-// Line geometry
-// ---------------------------------------------------------------------------
-
-/// The character range covering every **whole line** `selection` touches, from
-/// the first line's start to the last line's end. The trailing newline is *not*
-/// included — callers that need it (delete, duplicate) reach for it themselves.
-///
-/// A selection ending exactly at a line start does not pull that line in: with
-/// three lines selected by dragging down to column 0 of the fourth, the user
-/// means three.
 pub fn line_span(text: &str, selection: Range<usize>) -> Range<usize> {
     let len = text.chars().count();
     let (lo, hi) = sorted(selection, len);
@@ -82,30 +42,17 @@ pub fn line_span(text: &str, selection: Range<usize>) -> Range<usize> {
     start..line_end(text, hi)
 }
 
-/// `⌘L`: the cursor's line, or one line more when the line is already selected.
-///
-/// The "already selected" test is derived from the selection itself rather than
-/// from a press counter, so it stays correct when the user clicks elsewhere
-/// between presses. On the last line, and on a buffer's final empty line, it is
-/// a no-op.
-///
-/// An empty line is its own empty span, so it reads as already-selected and the
-/// first press extends to the line below — the same as VS Code, and the only
-/// behaviour that isn't a silent no-op there.
 pub fn select_line(text: &str, selection: Range<usize>) -> Range<usize> {
     let len = text.chars().count();
     let (lo, hi) = sorted(selection, len);
     let span = line_span(text, lo..hi);
 
     if lo == span.start && hi == span.end && span.end < len {
-        // `span.end` is the newline; the next line starts just after it.
         return span.start..line_end(text, span.end + 1);
     }
     span
 }
 
-/// `⇧⌥↓`: every line the selection touches, copied directly below itself. The
-/// selection moves to the copy, so a second press duplicates the duplicate.
 pub fn duplicate_lines(text: &str, selection: Range<usize>) -> Edit {
     let span = line_span(text, selection);
     let block = slice(text, span.clone());
@@ -114,17 +61,10 @@ pub fn duplicate_lines(text: &str, selection: Range<usize>) -> Edit {
     Edit {
         range: span.end..span.end,
         replacement: format!("\n{block}"),
-        // +1 to step over the newline we just inserted.
         cursor_after: (span.end + 1)..(span.end + 1 + block_len),
     }
 }
 
-/// `⇧⌘K`: every line the selection touches, removed along with one line break so
-/// no blank line is left behind.
-///
-/// The break taken is the one *after* the span, except on the last line where it
-/// is the one before — and on a single-line buffer there is none to take, which
-/// leaves the buffer empty.
 pub fn delete_lines(text: &str, selection: Range<usize>) -> Edit {
     let len = text.chars().count();
     let span = line_span(text, selection);
@@ -145,17 +85,6 @@ pub fn delete_lines(text: &str, selection: Range<usize>) -> Edit {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Occurrence search
-// ---------------------------------------------------------------------------
-
-/// The word under character offset `index`, or `None` when the cursor is not
-/// touching one. A cursor sitting just past a word's last character still counts
-/// as touching it, which is where the caret usually is after typing an
-/// identifier.
-///
-/// "Word" is alphanumeric plus `_` — C++ identifier characters, so `set_gain`
-/// selects whole rather than in three pieces.
 pub fn word_at(text: &str, index: usize) -> Option<Range<usize>> {
     let chars: Vec<char> = text.chars().collect();
     let index = index.min(chars.len());
@@ -179,16 +108,6 @@ pub fn word_at(text: &str, index: usize) -> Option<Range<usize>> {
     Some(start..end)
 }
 
-/// `⌘D`: the next exact occurrence of `needle` at or after character offset
-/// `from`, wrapping to the top of the buffer.
-///
-/// Case-sensitive and word-bounded, because in C++ `gain`, `Gain`, `pregain` and
-/// `gain_smoothed` are four different things and selecting the wrong one is
-/// worse than not selecting at all.
-///
-/// The word-boundary test applies only at ends where the needle itself is a word
-/// character, so selecting punctuation (`->`) still behaves as a plain exact
-/// search.
 pub fn next_occurrence(text: &str, needle: &str, from: usize) -> Option<Range<usize>> {
     let chars: Vec<char> = text.chars().collect();
     let needle: Vec<char> = needle.chars().collect();
@@ -196,7 +115,6 @@ pub fn next_occurrence(text: &str, needle: &str, from: usize) -> Option<Range<us
         return None;
     }
 
-    // Candidate start positions are 0..=last, so the wrap is a modulo over them.
     let last = chars.len() - needle.len();
     let begin = if from > last { 0 } else { from };
     let positions = last + 1;
@@ -207,12 +125,6 @@ pub fn next_occurrence(text: &str, needle: &str, from: usize) -> Option<Range<us
         .map(|at| at..at + needle.len())
 }
 
-/// Character ranges of every case-insensitive occurrence of `query` in `text` —
-/// the find bar's search, deliberately a different policy from
-/// [`next_occurrence`]: typing into a find field is a hunt, where matching too
-/// much is helpful, and `⌘D` is a pick, where it is not.
-///
-/// Returns nothing for an empty query.
 pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() {
         return Vec::new();
@@ -220,7 +132,6 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
     let haystack = text.to_lowercase();
     let needle = query.to_lowercase();
 
-    // Byte offset → char offset, so the ranges line up with the cursor model.
     let mut char_of_byte = vec![0usize; haystack.len() + 1];
     for (chars, (byte, _)) in haystack.char_indices().enumerate() {
         char_of_byte[byte] = chars;
@@ -239,18 +150,6 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
     matches
 }
 
-// ---------------------------------------------------------------------------
-// Comment toggling
-// ---------------------------------------------------------------------------
-
-/// `⌘/`: comment or uncomment every line the selection touches, using `token` as
-/// the line-comment marker (see `text_document::line_comment`).
-///
-/// Uncomments when *every* non-blank line in the span is already commented, and
-/// comments otherwise — so a partly-commented block becomes fully commented on
-/// the first press rather than flip-flopping line by line.
-///
-/// Returns `None` when there is nothing to act on (a span of blank lines).
 pub fn toggle_comment(text: &str, selection: Range<usize>, token: &str) -> Option<Edit> {
     let len = text.chars().count();
     let (lo, hi) = sorted(selection, len);
@@ -267,8 +166,6 @@ pub fn toggle_comment(text: &str, selection: Range<usize>, token: &str) -> Optio
         .filter(|line| !line.trim().is_empty())
         .all(|line| line.trim_start().starts_with(token));
 
-    // Comment at the shallowest indentation in the block, so the column stays
-    // aligned instead of following each line's own indent.
     let column = lines
         .iter()
         .filter(|line| !line.trim().is_empty())
@@ -277,8 +174,6 @@ pub fn toggle_comment(text: &str, selection: Range<usize>, token: &str) -> Optio
         .unwrap_or(0);
 
     let mut out = String::with_capacity(block.len() + lines.len() * (token.len() + 1));
-    // Per line: how much its length changed, and the column the change happened
-    // at — together these are enough to carry a caret through the edit.
     let mut changes: Vec<(isize, usize)> = Vec::with_capacity(lines.len());
 
     for (index, line) in lines.iter().enumerate() {
@@ -345,21 +240,13 @@ fn carry_caret(block: &str, block_start: usize, caret: usize, changes: &[(isize,
         shift += delta;
     }
 
-    // A negative shift can only ever pull the caret back to its own line start.
     caret.saturating_add_signed(shift).max(caret - column)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// C++ identifier characters — what `⌘D` treats as one word.
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// Whether a match at `at` sits on word boundaries, checked only at the ends
-/// where the needle is itself a word character.
 fn bounded(chars: &[char], at: usize, needle: &[char]) -> bool {
     let start_ok = !is_word(needle[0]) || at == 0 || !is_word(chars[at - 1]);
     let end = at + needle.len();
@@ -367,37 +254,30 @@ fn bounded(chars: &[char], at: usize, needle: &[char]) -> bool {
     start_ok && end_ok
 }
 
-/// Orders a selection's ends and clamps them into the buffer — egui's primary
-/// cursor can sit either side of its secondary.
 fn sorted(selection: Range<usize>, len: usize) -> (usize, usize) {
     let lo = selection.start.min(selection.end).min(len);
     let hi = selection.start.max(selection.end).min(len);
     (lo, hi)
 }
 
-/// How many leading whitespace characters `line` has.
 fn indent_chars(line: &str) -> usize {
     line.chars().take_while(|c| c.is_whitespace()).count()
 }
 
-/// Byte offset of character offset `index`, clamping past the end.
 fn byte_of_char(text: &str, index: usize) -> usize {
     text.char_indices()
         .nth(index)
         .map_or(text.len(), |(byte, _)| byte)
 }
 
-/// Character offset of byte offset `byte`.
 fn char_of_byte(text: &str, byte: usize) -> usize {
     text[..byte].chars().count()
 }
 
-/// The text of a character range.
 fn slice(text: &str, range: Range<usize>) -> &str {
     &text[byte_of_char(text, range.start)..byte_of_char(text, range.end)]
 }
 
-/// Character offset of the start of the line containing `index`.
 fn line_start(text: &str, index: usize) -> usize {
     let byte = byte_of_char(text, index);
     text[..byte]
@@ -405,8 +285,6 @@ fn line_start(text: &str, index: usize) -> usize {
         .map_or(0, |i| char_of_byte(text, i + 1))
 }
 
-/// Character offset of the end of the line containing `index` — the position of
-/// its newline, or the end of the buffer on the last line.
 fn line_end(text: &str, index: usize) -> usize {
     let byte = byte_of_char(text, index);
     text[byte..]
@@ -418,47 +296,36 @@ fn line_end(text: &str, index: usize) -> usize {
 mod tests {
     use super::*;
 
-    /// Applies an edit and returns the new text plus the resulting selection, so
-    /// the tests assert on both — a selection landing in the wrong place is the
-    /// failure users actually notice.
     fn applied(text: &str, edit: &Edit) -> (String, Range<usize>) {
         let mut out = text.to_owned();
         apply(&mut out, edit);
         (out, edit.cursor_after.clone())
     }
 
-    // -- line_span ----------------------------------------------------------
-
     #[test]
     fn line_span_covers_the_whole_lines_a_selection_touches() {
         let text = "one\ntwo\nthree\n";
-        assert_eq!(line_span(text, 0..0), 0..3); // caret on line 1
-        assert_eq!(line_span(text, 5..6), 4..7); // inside line 2
-        assert_eq!(line_span(text, 1..5), 0..7); // spilling across 1 and 2
-        assert_eq!(line_span(text, 1..9), 0..13); // and on across all three
-        assert_eq!(line_span(text, 14..14), 14..14); // trailing empty line
+        assert_eq!(line_span(text, 0..0), 0..3);
+        assert_eq!(line_span(text, 5..6), 4..7);
+        assert_eq!(line_span(text, 1..5), 0..7);
+        assert_eq!(line_span(text, 1..9), 0..13);
+        assert_eq!(line_span(text, 14..14), 14..14);
     }
 
     #[test]
     fn line_span_ignores_a_selection_that_only_reaches_the_next_line_start() {
         let text = "one\ntwo\nthree\n";
-        // Dragging from line 1 down to column 0 of line 2 means one line.
         assert_eq!(line_span(text, 0..4), 0..3);
-        // But an actual caret on line 2 does select line 2.
         assert_eq!(line_span(text, 4..4), 4..7);
     }
 
     #[test]
     fn line_span_accepts_a_backwards_selection() {
-        // Built field-wise: `5..1` as a literal is a lint, but it is exactly
-        // what egui hands us when the user drags a selection upward.
         let backwards = |start, end| Range { start, end };
         let text = "one\ntwo\nthree\n";
         assert_eq!(line_span(text, backwards(5, 1)), 0..7);
         assert_eq!(line_span(text, backwards(9, 1)), 0..13);
     }
-
-    // -- select_line --------------------------------------------------------
 
     #[test]
     fn select_line_takes_the_line_then_extends_downward() {
@@ -469,25 +336,21 @@ mod tests {
         assert_eq!(second, 0..7);
         let third = select_line(text, second);
         assert_eq!(third, 0..13);
-        // Nothing below the last line to extend into.
         assert_eq!(select_line(text, third.clone()), third);
     }
 
     #[test]
     fn select_line_from_either_end_of_the_line_selects_it_first() {
         let text = "one\ntwo\n";
-        assert_eq!(select_line(text, 4..4), 4..7); // line start
-        assert_eq!(select_line(text, 7..7), 4..7); // line end
+        assert_eq!(select_line(text, 4..4), 4..7);
+        assert_eq!(select_line(text, 7..7), 4..7);
     }
 
     #[test]
     fn select_line_on_an_empty_line_extends_to_the_next_one() {
-        // An empty line is its own empty span, so it reads as already selected.
         let text = "a\n\nb\n";
         assert_eq!(select_line(text, 2..2), 2..4);
     }
-
-    // -- duplicate_lines ----------------------------------------------------
 
     #[test]
     fn duplicate_copies_the_line_below_and_selects_the_copy() {
@@ -524,7 +387,6 @@ mod tests {
         assert_eq!(out, "x\nx\nx\n");
     }
 
-    // -- delete_lines -------------------------------------------------------
 
     #[test]
     fn delete_takes_the_following_newline_so_no_blank_line_is_left() {
@@ -557,21 +419,20 @@ mod tests {
         assert_eq!(out, "a\nd\n");
     }
 
-    // -- word_at ------------------------------------------------------------
 
     #[test]
     fn word_at_finds_identifiers_including_underscores_and_digits() {
         let text = "float set_gain2 = 0;";
         assert_eq!(word_at(text, 8), Some(6..15));
-        assert_eq!(word_at(text, 6), Some(6..15)); // at the first character
-        assert_eq!(word_at(text, 15), Some(6..15)); // just past the last
+        assert_eq!(word_at(text, 6), Some(6..15));
+        assert_eq!(word_at(text, 15), Some(6..15));
     }
 
     #[test]
     fn word_at_returns_nothing_between_words() {
         let text = "a  b";
         assert_eq!(word_at(text, 2), None);
-        assert_eq!(word_at(text, 99), Some(3..4)); // clamps to the end
+        assert_eq!(word_at(text, 99), Some(3..4));
     }
 
     #[test]
@@ -580,12 +441,9 @@ mod tests {
         assert_eq!(word_at(text, 4), Some(3..8));
     }
 
-    // -- next_occurrence ----------------------------------------------------
-
     #[test]
     fn next_occurrence_is_case_sensitive_and_word_bounded() {
         let text = "gain Gain pregain gain_smoothed gain";
-        // From just after the first hit: skips Gain, pregain and gain_smoothed.
         assert_eq!(next_occurrence(text, "gain", 1), Some(32..36));
     }
 
@@ -614,8 +472,6 @@ mod tests {
         assert_eq!(next_occurrence("abc", "zzz", 0), None);
     }
 
-    // -- find_matches (moved from find_bar.rs, behaviour unchanged) ----------
-
     #[test]
     fn finds_every_occurrence_case_insensitively() {
         let text = "float Gain; float gain;";
@@ -638,15 +494,13 @@ mod tests {
         assert_eq!(find_matches("aaaa", "aa"), vec![0..2, 2..4]);
     }
 
-    // -- toggle_comment -----------------------------------------------------
-
     #[test]
     fn comment_and_uncomment_round_trip_a_single_line() {
         let text = "int a = 1;\n";
         let edit = toggle_comment(text, 4..4, "//").unwrap();
         let (out, cursor) = applied(text, &edit);
         assert_eq!(out, "// int a = 1;\n");
-        assert_eq!(cursor, 7..7); // caret rode the 3-character insertion
+        assert_eq!(cursor, 7..7);
 
         let back = toggle_comment(&out, 7..7, "//").unwrap();
         let (out, cursor) = applied(&out, &back);
@@ -691,7 +545,6 @@ mod tests {
     #[test]
     fn a_caret_before_the_comment_column_does_not_move() {
         let text = "    a;\n";
-        // Caret at column 1, the token goes in at column 4.
         let edit = toggle_comment(text, 1..1, "//").unwrap();
         let (out, cursor) = applied(text, &edit);
         assert_eq!(out, "    // a;\n");
@@ -714,7 +567,6 @@ mod tests {
     #[test]
     fn toggle_comment_counts_characters_not_bytes() {
         let text = "// héllo\nx;\n";
-        // Not all commented, so this comments both lines.
         let (out, _) = applied(text, &toggle_comment(text, 0..11, "//").unwrap());
         assert_eq!(out, "// // héllo\n// x;\n");
     }

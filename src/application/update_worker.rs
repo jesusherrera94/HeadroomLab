@@ -1,13 +1,3 @@
-//! Runs the updater off the UI thread.
-//!
-//! Same shape as `graph_worker`: a named thread, a job channel, and a
-//! non-blocking poll the UI drains from its existing repaint tick. The
-//! difference is what flows back — an update reports *while* it works, so the
-//! return channel carries a stream of [`UpdateEvent`]s rather than one result.
-//!
-//! Only one job ever runs at a time. The port's calls block for as long as the
-//! network takes, and a second concurrent install would be racing the first for
-//! the same files.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -16,49 +6,31 @@ use std::thread;
 use crate::application::ports::UpdaterPort;
 use crate::domain::update::{ReleaseInfo, UpdateError};
 
-/// What the worker is being asked to do.
-///
-/// Each job is atomic and ends in exactly one terminal event. Checking and
-/// installing are deliberately *separate* jobs rather than one combined one:
-/// only the service knows whether a found release should be installed at once
-/// (the splash) or held until the unsaved-work guard has been answered (D7), and
-/// a single job that did both would have to clear its busy flag halfway through
-/// to report the find — letting a second install be submitted on top of the one
-/// still running.
 pub enum UpdateJob {
-    /// Look for a newer release. Ends in `UpToDate` or `Found`.
     Check,
-    /// Install a release a `Check` turned up.
     Install(ReleaseInfo),
 }
 
-/// What the worker reports back. A job produces zero or more `Progress` events
-/// and exactly one terminal event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateEvent {
-    /// A check found nothing to do — or failed, which the service treats the
-    /// same way (D5).
+
     UpToDate,
-    /// A check found a release. The service decides what happens next.
     Found(ReleaseInfo),
     Progress {
         version: String,
         received: u64,
         total: Option<u64>,
     },
-    /// The download finished and the swap is under way.
     Installing {
         version: String,
     },
-    /// The new build is in place and the app may hand over to it.
     Installed {
         version: String,
     },
     Failed(UpdateError),
 }
 
-/// Owns the update thread. Dropping it closes the job channel, which ends the
-/// thread once its current job returns.
+
 pub struct UpdateWorker {
     job_tx: Sender<UpdateJob>,
     event_rx: Receiver<UpdateEvent>,
@@ -82,21 +54,17 @@ impl UpdateWorker {
         }
     }
 
-    /// Queues a job, unless one is already running. Returns whether it was taken.
     pub fn submit(&mut self, job: UpdateJob) -> bool {
         if self.busy {
             return false;
         }
         if self.job_tx.send(job).is_err() {
-            // The thread is gone; nothing will ever answer.
             return false;
         }
         self.busy = true;
         true
     }
 
-    /// Non-blocking poll. Clears the busy flag on a terminal event, so the next
-    /// job can be submitted.
     pub fn try_recv(&mut self) -> Option<UpdateEvent> {
         match self.event_rx.try_recv() {
             Ok(event) => {
@@ -118,8 +86,6 @@ impl UpdateWorker {
     }
 }
 
-/// Whether this event ends the job that produced it. One rule, because every
-/// job is atomic — see [`UpdateJob`].
 fn is_terminal(event: &UpdateEvent) -> bool {
     matches!(
         event,
@@ -137,10 +103,6 @@ fn worker_loop(
 ) {
     while let Ok(job) = jobs.recv() {
         let outcome = match job {
-            // Reported as-is, including failures: whether a failed check is
-            // worth showing depends on *why* it ran, and only the service knows
-            // that (D5). Deciding here would tell a user who explicitly asked
-            // "am I up to date?" that they are, when in truth we never found out.
             UpdateJob::Check => match updater.check() {
                 Ok(Some(release)) => UpdateEvent::Found(release),
                 Ok(None) => UpdateEvent::UpToDate,
@@ -150,7 +112,6 @@ fn worker_loop(
         };
 
         if events.send(outcome).is_err() {
-            // The UI has gone; so should we.
             return;
         }
     }
@@ -166,8 +127,6 @@ fn install(
     let progress_tx = events.clone();
     let progress_version = version.clone();
     let on_progress = move |received: u64, total: Option<u64>| {
-        // A closed channel means the UI is gone. Nothing useful to do about it
-        // here; the send after this call returns will end the loop.
         let _ = progress_tx.send(UpdateEvent::Progress {
             version: progress_version.clone(),
             received,
@@ -197,11 +156,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
-    /// A port that answers from a script, with no network anywhere.
     struct FakeUpdater {
         check_result: Mutex<Option<Result<Option<ReleaseInfo>, UpdateError>>>,
         install_result: Mutex<Option<Result<(), UpdateError>>>,
-        /// Byte pairs the install reports before returning.
         progress: Vec<(u64, Option<u64>)>,
         checks: AtomicUsize,
         installs: AtomicUsize,
@@ -265,7 +222,6 @@ mod tests {
         }
     }
 
-    /// Drains events until a terminal one arrives, or the deadline passes.
     fn drain(worker: &mut UpdateWorker) -> Vec<UpdateEvent> {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut events = Vec::new();
@@ -343,7 +299,6 @@ mod tests {
         );
     }
 
-    /// AC 5: a failed *download* does surface, unlike a failed check.
     #[test]
     fn a_failed_install_reports_the_error() {
         let fake = FakeUpdater::finding(release());
@@ -362,7 +317,6 @@ mod tests {
         );
     }
 
-    /// A check never installs on its own — that is the service's call (D7).
     #[test]
     fn a_check_never_installs_by_itself() {
         let fake = Arc::new(FakeUpdater::finding(release()));

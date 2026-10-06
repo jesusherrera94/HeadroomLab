@@ -1,9 +1,3 @@
-//! Design tokens and egui style setup for the whole app.
-//!
-//! Single source of truth for colors, font sizes and shape metrics, mirroring
-//! the previous Fluent-style look. Designed to be reused by future windows
-//! (e.g. the planned code-editor window).
-
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
 use crate::domain::terminal::{Rgb, TerminalPalette};
@@ -69,17 +63,6 @@ pub const DIAGNOSTIC_WARNING: Color32 = UNSAVED_DOT;
 /// Background behind selected terminal text.
 pub const TERMINAL_SELECTION: Color32 = Color32::from_rgb(0x2d, 0x44, 0x5c);
 
-/// The terminal's 16 ANSI colours plus its default foreground, background and
-/// cursor.
-///
-/// Lives here rather than in `domain::terminal` — where the refinement first
-/// sketched it — because a palette is a theming decision, and nothing in
-/// `domain` may depend on the UI. The domain owns the *shape*
-/// ([`TerminalPalette`]); this owns the values.
-///
-/// Red, yellow and blue borrow the app's own tokens so a compiler error in the
-/// terminal is the same red as an error banner. The rest are conventional
-/// terminal colours, chosen bright enough to read on `PLOT_FRAME_BACKGROUND`.
 pub fn terminal_palette() -> TerminalPalette {
     TerminalPalette {
         named: [
@@ -106,13 +89,11 @@ pub fn terminal_palette() -> TerminalPalette {
     }
 }
 
-/// A domain colour as egui sees it — the last step of the terminal's colour
-/// pipeline, which resolves ANSI codes to RGB in the adapter.
+
 pub fn terminal_color(rgb: Rgb) -> Color32 {
     Color32::from_rgb(rgb.r, rgb.g, rgb.b)
 }
 
-/// The reverse, for seeding the palette from the app's own tokens.
 const fn rgb_of(color: Color32) -> Rgb {
     Rgb::new(color.r(), color.g(), color.b())
 }
@@ -145,17 +126,12 @@ pub fn title_font() -> FontId {
     FontId::new(FONT_TITLE, FontFamily::Proportional)
 }
 
-/// Merges the Phosphor icon font into the context so file-explorer/tab icon
-/// glyphs render. Phosphor is inserted as a fallback in the Proportional
-/// family, so existing text is unaffected. Call once at startup.
 pub fn install_icon_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     ctx.set_fonts(fonts);
 }
 
-/// Installs the app-wide style: a light, Fluent-like theme matching the
-/// previous UI appearance.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Light);
     let mut style = (*ctx.style_of(egui::Theme::Light)).clone();
@@ -205,8 +181,6 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_style_of(egui::Theme::Light, style);
 }
 
-/// Returns a button styled as "primary" (accent-filled) when `selected`,
-/// mirroring the "primary" button styling used by switches.
 pub fn selectable_button(text: &str, selected: bool) -> egui::Button<'static> {
     let button = egui::Button::new(egui::RichText::new(text.to_owned()).color(if selected {
         Color32::WHITE

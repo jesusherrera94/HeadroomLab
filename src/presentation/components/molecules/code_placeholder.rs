@@ -1,13 +1,8 @@
-//! Read-only states of the code area: the empty state, files we refuse to load
-//! into a `TextEdit` (binary / oversized), and the banner shown when an open
-//! file changed on disk underneath a buffer the user has been editing.
-
 use eframe::egui::{self, RichText};
 
 use crate::domain::text_document::DocumentContent;
 use crate::presentation::theme;
 
-/// Centred message for a file that cannot be edited, explaining why.
 pub fn code_placeholder(ui: &mut egui::Ui, content: &DocumentContent) {
     let (title, detail) = match content {
         DocumentContent::Binary => (
@@ -22,7 +17,6 @@ pub fn code_placeholder(ui: &mut egui::Ui, content: &DocumentContent) {
                 crate::domain::text_document::MAX_OPEN_BYTES / (1024 * 1024)
             ),
         ),
-        // Editable text never reaches here; the code editor renders it.
         DocumentContent::Text { .. } => return,
     };
 
@@ -44,7 +38,6 @@ pub fn code_placeholder(ui: &mut egui::Ui, content: &DocumentContent) {
     });
 }
 
-/// The empty state, before any file is opened.
 pub fn no_file_open(ui: &mut egui::Ui) {
     ui.centered_and_justified(|ui| {
         ui.label(
@@ -55,8 +48,6 @@ pub fn no_file_open(ui: &mut egui::Ui) {
     });
 }
 
-/// Banner shown above a dirty buffer whose file changed on disk. Returns true
-/// when the user asks to reload (discarding their edits).
 pub fn changed_on_disk_banner(ui: &mut egui::Ui) -> bool {
     let mut reload = false;
     egui::Frame::new()
@@ -84,7 +75,6 @@ pub fn changed_on_disk_banner(ui: &mut egui::Ui) -> bool {
     reload
 }
 
-/// Formats a byte count for the too-large message.
 fn human_size(bytes: u64) -> String {
     const MB: u64 = 1024 * 1024;
     const KB: u64 = 1024;

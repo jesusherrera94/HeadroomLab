@@ -1,19 +1,10 @@
-//! Pure file-system domain: the error type surfaced by explorer actions and the
-//! name policy shared by every caller (create + rename). No IO here — the
-//! actual disk work lives in the infrastructure adapter.
-
 use std::fmt;
 
-/// Failure of a file-system action, surfaced to the UI (e.g. the error modal).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileSystemError {
-    /// Empty, contains a path separator, or is `.`/`..`.
     InvalidName(String),
-    /// An entry with that name already exists in the target directory.
     AlreadyExists(String),
-    /// The target path no longer exists.
     NotFound(String),
-    /// An underlying IO / trash / reveal failure.
     Io(String),
 }
 
@@ -34,9 +25,6 @@ impl fmt::Display for FileSystemError {
 
 impl std::error::Error for FileSystemError {}
 
-/// Validates a new/renamed entry name. Rejects empty names, `.`/`..`, and any
-/// name containing a path separator (`/` or `\`), which would escape the target
-/// directory. Reusable by any caller so the rules stay consistent.
 pub fn validate_entry_name(name: &str) -> Result<(), FileSystemError> {
     let trimmed = name.trim();
     if trimmed.is_empty()

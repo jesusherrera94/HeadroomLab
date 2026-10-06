@@ -1,24 +1,12 @@
-//! Create-project modal: Name + editable Path fields with inline validation
-//! and Cancel/Create buttons. Presentation mirrors `error_dialog` for a
-//! consistent modal look. Owns no state — the caller holds the buffers and
-//! reacts to the returned events.
-
 use eframe::egui::{self, CornerRadius, RichText, Stroke};
 
 use crate::presentation::theme;
 
-/// Mutable buffers + flags the modal reads and writes, plus the caller-computed
-/// validation state (the modal itself performs no validation).
 pub struct CreateModalFields<'a> {
     pub name: &'a mut String,
     pub path: &'a mut String,
-    /// Set once the user manually edits Path, so the caller stops
-    /// auto-syncing it from Name.
     pub path_edited: &'a mut bool,
-    /// Inline validation message; `Some` disables **Create**.
     pub validation: Option<&'a str>,
-    /// Error from the last failed generation attempt (shown in red, does not by
-    /// itself disable Create — the user can retry once inputs change).
     pub generation_error: Option<&'a str>,
 }
 
@@ -77,8 +65,6 @@ pub fn create_project_modal(ctx: &egui::Context, fields: CreateModalFields) -> C
                 events.path_changed = true;
             }
 
-            // Inline validation message (blocks Create) and, separately, the
-            // error from a failed generation attempt.
             if let Some(msg) = fields.validation {
                 ui.label(
                     RichText::new(msg)

@@ -6,8 +6,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-/// Sample rate handed to the plugin at creation time. The simulator loads the
-/// effect before any audio file is chosen, so we use the engine's default rate.
 const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 pub struct SimulatorService {
@@ -65,7 +63,6 @@ impl SimulatorService {
     }
 
     pub fn handle_file_upload(&self, file_path: String) -> Result<f32, AudioError> {
-        // e.g., /Users/jesusherrera/development/HeadroomLab/test_samples/guitar_riff.wav
 
         let meta = self
             .audio_engine

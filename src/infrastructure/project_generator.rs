@@ -1,15 +1,9 @@
-//! File-writing adapter for the Create-project flow. Substitutes placeholders
-//! in the embedded templates and writes a compilable passthrough Hothouse
-//! effect project into the target directory.
-
 use std::fs;
 use std::path::Path;
 
 use crate::application::ports::{ProjectGenerationError, ProjectGeneratorPort};
 use crate::domain::project::sanitize_target;
 
-// Templates embedded at compile time. `hl_adapter.cpp.tpl` mirrors the FFI
-// contract in `dylib_plugin.rs` — keep the two in sync.
 const TPL_DSP_H: &str = include_str!("templates/dsp_primitives.h.tpl");
 const TPL_DSP_CPP: &str = include_str!("templates/dsp_primitives.cpp.tpl");
 const TPL_EP_H: &str = include_str!("templates/effect_processor.h.tpl");
@@ -37,8 +31,6 @@ impl ProjectGeneratorPort for TemplateProjectGenerator {
             ProjectGenerationError("Project name has no usable letters or digits.".into())
         })?;
 
-        // Defensive re-check of the modal's validation (D5): the target must be
-        // a missing or empty directory, never an existing file or non-empty dir.
         if path.is_file() {
             return Err(ProjectGenerationError(
                 "That path is a file, not a folder.".into(),
@@ -74,7 +66,6 @@ impl ProjectGeneratorPort for TemplateProjectGenerator {
                 .replace("{{TARGET}}", &target)
                 .replace("{{PROJECT_NAME}}", display_name);
             if let Err(e) = fs::write(path.join(filename), contents) {
-                // Best-effort cleanup: only remove the tree if this call created it.
                 if created_dir {
                     let _ = fs::remove_dir_all(path);
                 }
@@ -88,7 +79,6 @@ impl ProjectGeneratorPort for TemplateProjectGenerator {
     }
 }
 
-/// Whether `path` (assumed to be a directory) contains at least one entry.
 fn dir_non_empty(path: &Path) -> bool {
     fs::read_dir(path)
         .map(|mut entries| entries.next().is_some())
@@ -173,7 +163,6 @@ mod tests {
         let dir = temp_dir("badname");
         let generator = TemplateProjectGenerator::new();
         assert!(generator.generate("###", &dir).is_err());
-        // Nothing should have been created for an invalid name.
         assert!(!dir.exists());
     }
 }

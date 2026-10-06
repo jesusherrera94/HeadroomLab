@@ -1,18 +1,3 @@
-//! The DOOM.666 window: the engine's 320×200 frame scaled up to fill the
-//! viewport, and the overlays for the three ways a run ends (never started,
-//! died, cleared).
-//!
-//! **Painting.** One texture, updated in place every frame — recreating it
-//! would allocate a new GPU texture 35 times a second. Nearest-neighbour
-//! filtering keeps the pixels crunchy instead of smearing them, and the image
-//! is fitted to a 4:3 rect: Doom's 320×200 frame was drawn for 4:3 monitors
-//! with non-square pixels, so stretching it there is what "correct" looks like.
-//!
-//! **Input.** Held keys are read from `keys_down` each frame rather than from
-//! key events: the engine wants "what is held during this tick", not edges.
-//! WASD/arrows move and turn, Space uses, E or Ctrl fires, Shift runs,
-//! 1–6 pick a weapon — the classic bindings.
-
 use eframe::egui::{self, RichText};
 
 use crate::domain::doom::{DOOM_SCREEN_HEIGHT, DOOM_SCREEN_WIDTH, DOOM_TICK, DoomControls};
@@ -41,16 +26,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut DoomState) {
             } else if game.player_dead() {
                 overlay(ui, "YOU DIED", "as everyone does, eventually", state);
             } else {
-                // The simulation owes a tick every 1/35 s whether or not the
-                // user touches anything; the app's 100 ms heartbeat is far too
-                // slow for a game.
                 ui.ctx().request_repaint_after(DOOM_TICK);
             }
         });
 }
 
-/// The controls held this frame. `keys_down`, not events: a held W must keep
-/// walking across every tick, not just the one its press landed on.
 fn held_controls(ui: &egui::Ui) -> DoomControls {
     use egui::Key as K;
     ui.input(|input| DoomControls {
@@ -70,18 +50,11 @@ fn held_controls(ui: &egui::Ui) -> DoomControls {
     })
 }
 
-/// Uploads this frame's pixels and paints them into the largest 4:3 rect that
-/// fits the panel, letterboxed on black.
 fn paint_frame(ui: &mut egui::Ui, frame: &[u8]) {
     let image =
         egui::ColorImage::from_rgba_unmultiplied([DOOM_SCREEN_WIDTH, DOOM_SCREEN_HEIGHT], frame);
     let options = egui::TextureOptions::NEAREST;
 
-    // The handle lives in egui's own storage rather than in `DoomState`, which
-    // keeps the controller egui-free (the same boundary the terminal draws).
-    // Looked up and created in separate context locks: `load_texture` reads
-    // the context, so calling it from inside `data_mut`'s write lock would
-    // deadlock.
     let id = egui::Id::new("doom_frame");
     let existing: Option<egui::TextureHandle> = ui.ctx().data(|data| data.get_temp(id));
     let texture = match existing {
@@ -110,8 +83,6 @@ fn paint_frame(ui: &mut egui::Ui, frame: &[u8]) {
     );
 }
 
-/// The end-of-run scrim: a title in the middle of the frame and one button
-/// under it. Doom's own intermission palette — a red that means it.
 fn overlay(ui: &mut egui::Ui, title: &str, subtitle: &str, state: &mut DoomState) {
     let rect = ui.max_rect();
     ui.painter()
@@ -143,7 +114,6 @@ fn overlay(ui: &mut egui::Ui, title: &str, subtitle: &str, state: &mut DoomState
     }
 }
 
-/// A centred message for a game that never started — no frame to draw behind.
 fn notice(ui: &mut egui::Ui, title: &str, detail: &str, action: &str, state: &mut DoomState) {
     let mut retry = false;
     ui.vertical_centered(|ui| {

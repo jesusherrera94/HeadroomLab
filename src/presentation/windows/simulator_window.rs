@@ -1,6 +1,3 @@
-//! Hardware simulator window: audio player transport, simulated hardware
-//! controls and the modal error dialog.
-
 use eframe::egui::{self, RichText};
 
 use crate::domain::menu;
@@ -23,8 +20,6 @@ pub struct SimulatorViewEvents {
 pub fn show(ui: &mut egui::Ui, state: &mut SimulatorState) -> SimulatorViewEvents {
     let mut events = SimulatorViewEvents::default();
 
-    // Space toggles playback, as the Transport menu advertises. Bound only in
-    // this window, so it never reaches the code editor as a keystroke.
     if state.has_audio {
         let play_pause = menu_controller::shortcut(menu::PLAY_PAUSE);
         events.transport.play_toggled = ui.input_mut(|i| i.consume_shortcut(&play_pause));

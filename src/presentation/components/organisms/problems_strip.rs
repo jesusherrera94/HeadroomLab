@@ -1,33 +1,16 @@
-//! The problems strip: what the last build complained about, one row each,
-//! click to jump.
-//!
-//! Sits between the code area and the terminal, and collapses to nothing when
-//! there is nothing to say — a clean build should cost no screen space.
-//!
-//! Only the first [`MAX_LISTED`] are drawn, with a final row saying how many
-//! were hidden. The first error is nearly always the real one and everything
-//! after it is cascade; the status bar's counts stay totals, so nothing is
-//! under-reported.
-
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular as ph;
 
 use crate::domain::diagnostics::{Diagnostic, MAX_LISTED, Severity};
 use crate::presentation::theme;
 
-/// A row the user clicked: open this file and put the caret here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Jump {
-    /// The path exactly as the compiler wrote it — resolving it against the
-    /// project root is the controller's job.
     pub file: String,
-    /// 1-based, as the compiler reported.
     pub line: u32,
     pub column: Option<u32>,
 }
 
-/// Renders the strip. `is_stale` answers whether a diagnostic's file has been
-/// edited since the build, which dims its row.
 pub fn problems_strip(
     ui: &mut egui::Ui,
     diagnostics: &[Diagnostic],
@@ -68,7 +51,6 @@ pub fn problems_strip(
     jump
 }
 
-/// One diagnostic: `<icon> error · effect.cpp:14 — message`.
 fn row(
     ui: &mut egui::Ui,
     diagnostic: &Diagnostic,
@@ -80,17 +62,12 @@ fn row(
         Severity::Error => theme::DIAGNOSTIC_ERROR,
         Severity::Warning => theme::DIAGNOSTIC_WARNING,
     };
-    // Dimmed once the file has been edited: the line number no longer means what
-    // the compiler meant, so the row is history rather than a live target.
     let color = if stale {
         base.gamma_multiply(0.45)
     } else {
         base
     };
 
-    // Phosphor glyphs, never a literal ● or ▲ — those codepoints are in neither
-    // the bundled text fonts nor Phosphor's private-use range and render as tofu
-    // boxes. `status_bar::unsaved_segment` documents the same trap.
     let icon = match diagnostic.severity {
         Severity::Error => ph::WARNING_CIRCLE,
         Severity::Warning => ph::WARNING,
@@ -101,8 +78,6 @@ fn row(
         text.push_str(&format!(" · {location}"));
     }
     text.push_str(&format!("  —  {}", diagnostic.message));
-    // The first note is the useful one ("did you mean 'cutoff'?"); the rest are
-    // declaration sites that need more room than a strip row has.
     if let Some(note) = diagnostic.notes.first() {
         text.push_str(&format!("  ({note})"));
     }

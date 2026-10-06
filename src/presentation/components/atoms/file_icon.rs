@@ -1,19 +1,12 @@
-//! A per-node icon glyph from the Phosphor icon font, painted in a fixed-width
-//! slot so explorer rows and tabs align. `NodeIcon::Generic` is the fallback for
-//! unknown file kinds, so every entry always gets an icon.
-
 use eframe::egui::{self, Color32};
 use egui_phosphor::regular as ph;
 
 use crate::presentation::editor_controller::NodeIcon;
 use crate::presentation::theme;
 
-/// Width reserved for the icon so names line up across rows.
 const ICON_WIDTH: f32 = 20.0;
-/// Rendered glyph size.
 const ICON_SIZE: f32 = 16.0;
 
-/// Draws the glyph for `icon`, allocating a fixed-width slot in the layout.
 pub fn file_icon(ui: &mut egui::Ui, icon: NodeIcon) {
     let (glyph, color) = glyph_and_color(icon);
     let (rect, _) = ui.allocate_exact_size(

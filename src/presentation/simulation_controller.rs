@@ -1,6 +1,3 @@
-//! Logic for the simulator window: owns its per-window state and translates
-//! view events into `SimulatorService`/`GraphService` calls.
-
 use rfd::FileDialog;
 
 use crate::application::graph_service::GraphService;
@@ -8,7 +5,6 @@ use crate::application::simulator_service::SimulatorService;
 use crate::presentation::components::organisms::hardware_controls_panel::HardwareControlsState;
 use crate::presentation::windows::simulator_window::SimulatorViewEvents;
 
-/// Per-window state, replacing the previous window's UI-bound properties.
 pub struct SimulatorState {
     pub has_audio: bool,
     pub is_playing: bool,
@@ -18,7 +14,6 @@ pub struct SimulatorState {
     pub error_message: String,
     pub show_error: bool,
     pub hardware: HardwareControlsState,
-    /// Set to bring the OS window to the front on the next frame.
     pub focus_requested: bool,
 }
 
@@ -38,8 +33,6 @@ impl Default for SimulatorState {
     }
 }
 
-/// Follow-up actions the caller (app controller) must perform, since opening
-/// windows is the window manager's job.
 #[derive(Default)]
 pub struct SimulatorRequests {
     pub open_graph: bool,
@@ -95,8 +88,6 @@ pub fn handle_events(
     requests
 }
 
-/// Per-frame sync, replacing the previous 100ms UI timer: mirrors the playhead into
-/// the seek slider and detects natural end-of-track.
 pub fn tick(state: &mut SimulatorState, service: &SimulatorService) {
     state.current_time = service.current_position();
     if !service.is_playing() && state.is_playing {
@@ -124,8 +115,8 @@ fn upload_audio(
             state.duration = duration;
             state.current_time = 0.0;
             state.is_playing = false;
-            service.stop(); // Reset engine state
-            graph_service.mark_dirty(); // Refresh an already-open graph window
+            service.stop();
+            graph_service.mark_dirty();
         }
         Err(e) => {
             println!("Validation failed: {:?}", e);

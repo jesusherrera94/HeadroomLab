@@ -1,8 +1,3 @@
-//! One row in the explorer tree: a collapse caret (folders only), a kind icon
-//! and the entry name, with hover and selection highlights. Returns the click
-//! `Response` so the organism can toggle folders / select files. Indentation is
-//! handled by the caller's `CollapsingState` body, not here.
-
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, RichText, Sense};
 use egui_phosphor::regular as ph;
 
@@ -10,18 +5,11 @@ use crate::presentation::components::atoms::file_icon::file_icon;
 use crate::presentation::editor_controller::{NodeIcon, TreeNode};
 use crate::presentation::theme;
 
-/// Width reserved for the collapse caret so folder and file icons align.
 const CARET_WIDTH: f32 = 14.0;
 const CARET_SIZE: f32 = 12.0;
-/// Radius of the unsaved ●, matching the tab strip's.
 const DOT_RADIUS: f32 = 3.5;
-/// Gap between the dot and the row's right edge.
 const DOT_MARGIN: f32 = 10.0;
 
-/// Renders `node` as a row. `open` is `Some(is_open)` for directories (drives
-/// the caret and folder-open icon) and `None` for files. `unsaved` adds the
-/// right-aligned ● marking an open buffer with unsaved changes. Returns the
-/// row's click response.
 pub fn explorer_row(
     ui: &mut egui::Ui,
     node: &TreeNode,
@@ -29,7 +17,6 @@ pub fn explorer_row(
     selected: bool,
     unsaved: bool,
 ) -> egui::Response {
-    // Reserve a shape slot for the highlight painted behind the row.
     let bg = ui.painter().add(egui::Shape::Noop);
 
     let frame = egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 3));
@@ -81,9 +68,6 @@ pub fn explorer_row(
     response
 }
 
-/// The ● marking an open buffer with unsaved changes, pushed to the row's right
-/// edge (the prototype's `margin-left:auto`). Purely informational here — saving
-/// happens from the tab strip, the status bar or Cmd/Ctrl+S.
 fn unsaved_dot(ui: &mut egui::Ui) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.add_space(DOT_MARGIN);
@@ -97,7 +81,6 @@ fn unsaved_dot(ui: &mut egui::Ui) {
     });
 }
 
-/// Paints the collapse caret in a fixed-width slot (blank for files).
 fn caret(ui: &mut egui::Ui, open: Option<bool>) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(CARET_WIDTH, ui.text_style_height(&egui::TextStyle::Body)),
@@ -121,8 +104,6 @@ fn caret(ui: &mut egui::Ui, open: Option<bool>) {
     }
 }
 
-/// Chooses the icon: open/closed folder for directories, the file's own icon
-/// otherwise.
 fn display_icon(node: &TreeNode, open: Option<bool>) -> NodeIcon {
     match open {
         Some(true) => NodeIcon::FolderOpen,

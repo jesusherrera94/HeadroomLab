@@ -1,22 +1,11 @@
-//! In-buffer find bar (Cmd/Ctrl+F): query field, match count and next/prev
-//! stepping. Matches are shown by selecting them in the code editor rather than
-//! by tinting the layout job — the selection highlight egui already draws is the
-//! same affordance, and it keeps the syntax layouter untouched.
-//!
-//! The search itself is `domain::editing::find_matches` — this module is only
-//! the widget.
-
 use eframe::egui::{self, RichText};
 use egui_phosphor::regular as ph;
 
 use crate::presentation::theme;
 
-/// Live find state for the active buffer.
 pub struct FindState {
     pub query: String,
-    /// Which match is current, as an index into the match list.
     pub current: usize,
-    /// Set on open so the field grabs focus once.
     pub focus: bool,
 }
 
@@ -66,7 +55,6 @@ pub fn find_bar(ui: &mut egui::Ui, state: &mut FindState, match_count: usize) ->
                 if field.changed() {
                     events.changed = true;
                 }
-                // Enter steps to the next hit, the way every editor's find works.
                 if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     events.next = true;
                     field.request_focus();

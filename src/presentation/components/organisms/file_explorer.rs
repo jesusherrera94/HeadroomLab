@@ -1,10 +1,3 @@
-//! The explorer side panel: an "EXPLORER" header with new-file/new-folder
-//! buttons, and the real project file tree. Folders use a `CollapsingState`
-//! (persisted, animated) and load lazily. Rows support single-click open /
-//! folder-toggle, double-click inline rename, an inline "new entry" row, and a
-//! right-click context menu. All mutations are emitted as `ExplorerEvents` for
-//! the controller to apply through the `FileSystemService`.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -19,12 +12,7 @@ use crate::presentation::editor_controller::{
 };
 use crate::presentation::theme;
 
-/// Caret slot width, matched to `explorer_row` so inline editors line up.
 const CARET_WIDTH: f32 = 14.0;
-
-/// `unsaved` holds the paths of open buffers with unsaved changes, so their rows
-/// can show the ●. It is a set of paths rather than the tab list because the
-/// explorer has no business knowing what a tab is.
 pub fn file_explorer(
     ui: &mut egui::Ui,
     tree: &FileTreeState,
@@ -33,7 +21,6 @@ pub fn file_explorer(
 ) -> ExplorerEvents {
     let mut events = ExplorerEvents::default();
 
-    // Header: "EXPLORER" label, with new-folder / new-file buttons on the right.
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
@@ -70,7 +57,6 @@ pub fn file_explorer(
                 &mut events,
             );
 
-            // Empty space below the tree: right-click to create at the root.
             let remaining = ui.available_size();
             if remaining.y > 4.0 {
                 let bg = ui.allocate_response(remaining, egui::Sense::click());
@@ -106,7 +92,6 @@ fn render_node(
         .as_ref()
         .is_some_and(|r| r.path == node.path);
 
-    // -- Files ------------------------------------------------------------
     if !node.is_dir {
         if renaming {
             inline_rename_row(ui, node, None, ui_state, events);
@@ -122,7 +107,6 @@ fn render_node(
         return;
     }
 
-    // -- Directories ------------------------------------------------------
     let id = ui.make_persistent_id(&node.path);
     let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
 
@@ -137,8 +121,6 @@ fn render_node(
     let header = if renaming {
         inline_rename_row(ui, node, Some(state.is_open()), ui_state, events)
     } else {
-        // Directories never carry the ● — a dirty file's own row shows it, and
-        // bubbling it up the tree was explicitly rejected (HL13 D3).
         let row = explorer_row(ui, node, Some(state.is_open()), is_selected, false);
         if row.double_clicked() {
             events.begin_rename = Some(node.path.clone());
@@ -164,9 +146,6 @@ fn render_node(
     });
 }
 
-/// An auto-focused rename editor replacing a node's label. `open` drives the
-/// folder icon for directories (`None` for files). Returns the row response so
-/// directory bodies can still nest beneath it.
 fn inline_rename_row(
     ui: &mut egui::Ui,
     node: &TreeNode,
@@ -201,7 +180,6 @@ fn inline_rename_row(
     .response
 }
 
-/// An auto-focused "new entry" editor rendered at the top of a directory body.
 fn inline_create_row(
     ui: &mut egui::Ui,
     ui_state: &mut ExplorerUiState,
@@ -238,8 +216,6 @@ fn inline_create_row(
     });
 }
 
-/// Right-click menu for a node. New file/folder target the node's directory
-/// (the node itself if a folder, else its parent).
 fn entry_menu(ui: &mut egui::Ui, node: &TreeNode, events: &mut ExplorerEvents) {
     ui.set_min_width(190.0);
     let dir = if node.is_dir {

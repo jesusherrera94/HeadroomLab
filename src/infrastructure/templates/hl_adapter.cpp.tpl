@@ -1,8 +1,8 @@
 // HeadroomLab FFI contract for the simulator's dynamic library.
 //
-// These six `hl_*` symbols MUST stay in sync with the loader in HeadroomLab:
-//   src/infrastructure/dylib_plugin.rs
+// These six `hl_*` symbols MUST stay in sync with the loader in HeadroomLab
 // Build the shared library with:  make dylib
+
 #include "effect_processor.h"
 #include <cstddef>
 #include <cstdint>

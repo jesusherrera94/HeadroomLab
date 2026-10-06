@@ -1,7 +1,3 @@
-//! File-backed adapter for the recent-projects list. Persists a JSON array in
-//! the platform config dir (`ProjectDirs`). Reads are best-effort: any
-//! missing/corrupt file yields an empty list rather than an error.
-
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
@@ -12,8 +8,6 @@ use crate::domain::project::RecentProject;
 const FILE_NAME: &str = "recent_projects.json";
 
 pub struct FileRecentProjectsStore {
-    /// Full path to the JSON file, or `None` if no config dir is available on
-    /// this platform (in which case the list is session-only).
     file: Option<PathBuf>,
 }
 
@@ -59,8 +53,6 @@ impl RecentProjectsStore for FileRecentProjectsStore {
 mod tests {
     use super::*;
 
-    /// Store pointed at an explicit path, for testing without touching the
-    /// user's real config dir.
     fn store_at(path: PathBuf) -> FileRecentProjectsStore {
         FileRecentProjectsStore { file: Some(path) }
     }

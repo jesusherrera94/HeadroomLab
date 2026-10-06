@@ -1,11 +1,3 @@
-//! State and behaviour for the terminal panel: the open sessions, which one is
-//! showing, and what to do with the events each reports.
-//!
-//! Free of egui, like the other controllers — the panel draws, this decides.
-//! Anything that needs the UI framework (putting text on the clipboard when a
-//! program asks via OSC 52) leaves as a [`TerminalRequests`] for the window to
-//! carry out.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -17,49 +9,32 @@ use crate::domain::terminal::{
     ShellChoice, TerminalPalette, TerminalSize, TerminalSnapshot, build_command, shell_for,
 };
 
-/// Identity for a session, so an action raised in one frame still refers to the
-/// same shell when it runs — the same reasoning as `TabId` in the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId(u64);
 
-/// What a session is for. `Build` sessions are ordinary sessions whose child is
-/// a `make` invocation rather than a shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {
     Shell,
     Build(BuildKind),
 }
 
-/// One terminal tab.
 pub struct Session {
     pub id: SessionId,
-    /// Tab label: the shell's name, or whatever a program set the title to.
     pub title: String,
     pub kind: SessionKind,
-    /// The command this session runs, kept so **Restart** can respawn it.
     pub command: ShellChoice,
-    /// `None` once the child has exited or when it never started.
     pub inner: Option<Box<dyn TerminalSession>>,
-    /// The child's exit code, once it has one. `Some(None)` means it was killed
-    /// by a signal, which has no code.
     pub exited: Option<Option<i32>>,
-    /// Build progress, for the tab dot and the status bar. Only ever `Some` on a
-    /// `Build` session.
     pub status: Option<BuildStatus>,
-    /// Why this session could not start, rendered in its own body rather than a
-    /// modal — a terminal that will not open should not block the editor.
     pub error: Option<String>,
-    /// Where a mouse drag started, in cell coordinates.
     pub drag_anchor: Option<(u16, u16)>,
 }
 
 impl Session {
-    /// Whether this session's child is still running.
     pub fn is_live(&self) -> bool {
         self.inner.is_some() && self.exited.is_none()
     }
 
-    /// The message shown in place of the grid once the child is gone.
     pub fn exit_notice(&self) -> Option<String> {
         self.exited.map(|code| match code {
             Some(code) => format!("[process exited with status {code}]"),
@@ -68,22 +43,11 @@ impl Session {
     }
 }
 
-/// Work the panel cannot do itself because it needs the UI framework.
 #[derive(Default)]
 pub struct TerminalRequests {
-    /// A program asked for this text to go on the clipboard (OSC 52).
     pub copy: Option<String>,
-    /// A build finished badly; the message belongs in the editor's error banner.
     pub error: Option<String>,
-    /// A `make dylib` succeeded, so the simulator should swap in the library it
-    /// just produced.
-    ///
-    /// Deliberately a *reload*, not an open: Build & Run opens the window when
-    /// the button is pressed, because creating a window on the frame a build
-    /// finishes crashes eframe (see `app_controller`).
     pub reload_plugin: bool,
-    /// A `make dylib` failed. Build & Run must not show the emulator it was
-    /// holding ready — a library that did not build must never be run.
     pub build_failed: bool,
 }
 
@@ -91,27 +55,15 @@ pub struct TerminalState {
     port: Rc<dyn TerminalPort>,
     clipboard: Rc<dyn ClipboardPort>,
     palette: TerminalPalette,
-    /// Every session starts here — the project root.
     cwd: PathBuf,
     pub sessions: Vec<Session>,
     pub active: usize,
     next_id: u64,
-    /// The grid size last computed from the panel, reused when opening a session
-    /// so a new tab does not start at some default size and immediately reflow.
     pub size: TerminalSize,
-    /// Set on Windows when a build is attempted without git-bash.
     pub missing_git_bash: bool,
-    /// Whether the automatic first session has been opened yet.
     opened_once: bool,
-    /// Sub-line scroll pixels carried between frames, so a trackpad's many
-    /// small deltas add up to a line instead of each rounding away to nothing.
     pub scroll_carry: f32,
-    /// What the last build complained about. Replaced wholesale by each build.
     pub diagnostics: Vec<Diagnostic>,
-    /// Files edited since the build that produced `diagnostics`. Their line
-    /// numbers no longer mean what the compiler meant, so their squiggles are
-    /// dropped and their rows dimmed — but the rows stay, because the error the
-    /// user is in the middle of fixing should not vanish as they type.
     pub stale_files: HashSet<PathBuf>,
 }
 
@@ -130,8 +82,6 @@ impl TerminalState {
             sessions: Vec::new(),
             active: 0,
             next_id: 0,
-            // Replaced by the real measurement on the first paint; only used if
-            // a session somehow opens before the panel has been laid out.
             size: TerminalSize {
                 cols: 80,
                 rows: 24,
@@ -163,18 +113,14 @@ impl TerminalState {
         self.sessions.iter().position(|s| s.id == id)
     }
 
-    /// How many errors and warnings the last build produced, for the status bar.
-    /// Totals over the whole project, never filtered to the active file.
     pub fn diagnostic_counts(&self) -> Counts {
         counts(&self.diagnostics)
     }
 
-    /// Whether `path`'s diagnostics have been invalidated by an edit.
     pub fn is_stale(&self, path: &Path) -> bool {
         self.stale_files.contains(path)
     }
 
-    /// The build session's status, for the status bar.
     pub fn build_status(&self) -> Option<(BuildKind, BuildStatus)> {
         self.sessions.iter().find_map(|s| match (s.kind, s.status) {
             (SessionKind::Build(kind), Some(status)) => Some((kind, status)),
@@ -183,7 +129,6 @@ impl TerminalState {
     }
 }
 
-/// The shell this platform runs, resolved against the real environment.
 pub fn default_shell() -> ShellChoice {
     shell_for(
         Platform::current(),
@@ -192,19 +137,12 @@ pub fn default_shell() -> ShellChoice {
     )
 }
 
-/// Opens another shell tab and makes it active.
 pub fn open_shell(state: &mut TerminalState) {
     let command = default_shell();
     let title = command.label();
     spawn(state, command, title, SessionKind::Shell);
 }
 
-/// Opens the *first* shell, once, as soon as the panel knows its real size — so
-/// the session never starts at a guessed 80×24 and immediately reflows.
-///
-/// Guarded by a flag rather than by `sessions.is_empty()`: this runs every
-/// frame, so the emptiness test would respawn a shell the instant the user
-/// closed the last one, and the panel could never be left empty.
 pub fn ensure_open(state: &mut TerminalState) {
     if !state.opened_once {
         state.opened_once = true;
@@ -212,8 +150,6 @@ pub fn ensure_open(state: &mut TerminalState) {
     }
 }
 
-/// Spawns `command` as a new session. A failure to start becomes the session's
-/// own error rather than a modal, so the tab exists and can be retried.
 fn spawn(state: &mut TerminalState, command: ShellChoice, title: String, kind: SessionKind) {
     let id = state.take_id();
     let opened = state
@@ -239,13 +175,10 @@ fn spawn(state: &mut TerminalState, command: ShellChoice, title: String, kind: S
     state.active = state.sessions.len() - 1;
 }
 
-/// Closes a session, killing its child.
 pub fn close(state: &mut TerminalState, id: SessionId) {
     let Some(index) = state.index_of(id) else {
         return;
     };
-    // Dropping the session sends `Shutdown`; killing first makes the intent
-    // explicit and covers a child that ignores the closed PTY.
     if let Some(inner) = &state.sessions[index].inner {
         inner.kill();
     }
@@ -265,7 +198,6 @@ pub fn activate(state: &mut TerminalState, id: SessionId) {
     }
 }
 
-/// Respawns a session's command in place, keeping its position in the strip.
 pub fn restart(state: &mut TerminalState, id: SessionId) {
     let Some(index) = state.index_of(id) else {
         return;
@@ -293,38 +225,28 @@ pub fn restart(state: &mut TerminalState, id: SessionId) {
     }
 }
 
-/// Empties the active session's screen and scrollback.
 pub fn clear_active(state: &mut TerminalState) {
     if let Some(inner) = state.active_session().and_then(|s| s.inner.as_ref()) {
         inner.clear();
     }
 }
 
-/// Sends bytes to the active session's child.
 pub fn write_active(state: &TerminalState, bytes: &[u8]) {
     if let Some(session) = state.active_session()
         && session.is_live()
         && let Some(inner) = &session.inner
     {
-        // Typing snaps the view back to the prompt, as every terminal does —
-        // otherwise input would land somewhere the user cannot see. Clamped to
-        // the bottom by alacritty, so an oversized step is safe.
         inner.scroll(-(SCROLLBACK_LINES as i32));
         inner.write(bytes);
     }
 }
 
-/// Pastes the system clipboard into the active session.
 pub fn paste_active(state: &TerminalState) {
     if let Some(text) = state.clipboard.read() {
         write_active(state, text.as_bytes());
     }
 }
 
-/// Tells every live session the panel's new grid size.
-///
-/// Called only when the size actually changed: `Term::resize` reflows the whole
-/// grid, and doing that on every frame of a splitter drag is visible.
 pub fn resize(state: &mut TerminalState, size: TerminalSize) {
     if size == state.size {
         return;
@@ -337,8 +259,6 @@ pub fn resize(state: &mut TerminalState, size: TerminalSize) {
     }
 }
 
-/// A frame's view of the active session, or `None` when there is nothing live to
-/// draw (no sessions, a failed spawn, or a child that has exited).
 pub fn active_snapshot(state: &TerminalState) -> Option<TerminalSnapshot> {
     state
         .active_session()
@@ -346,10 +266,6 @@ pub fn active_snapshot(state: &TerminalState) -> Option<TerminalSnapshot> {
         .map(|inner| inner.snapshot())
 }
 
-/// Starts a build, replacing whatever the Build tab was doing.
-///
-/// Kill-and-restart rather than queue or refuse: once the button is pressed
-/// again, the build in flight is answering a question nobody is asking any more.
 pub fn run_build(state: &mut TerminalState, kind: BuildKind) -> TerminalRequests {
     let mut requests = TerminalRequests::default();
 
@@ -373,13 +289,9 @@ pub fn run_build(state: &mut TerminalState, kind: BuildKind) -> TerminalRequests
     };
 
     state.missing_git_bash = false;
-    // The previous build's complaints go before the new build starts, so the
-    // strip never shows a mix of two runs.
     state.diagnostics.clear();
     state.stale_files.clear();
 
-    // Reuse the Build tab if there is one, so repeated builds do not pile up
-    // tabs; its child is killed on the way (D7).
     if let Some(index) = state
         .sessions
         .iter()
@@ -407,8 +319,6 @@ pub fn run_build(state: &mut TerminalState, kind: BuildKind) -> TerminalRequests
     requests
 }
 
-/// Drains every session's events: retitling, exit codes, build status and
-/// clipboard requests. Called once per frame from the panel.
 pub fn tick(state: &mut TerminalState) -> TerminalRequests {
     let mut requests = TerminalRequests::default();
     let mut load_clipboard_for: Option<usize> = None;
@@ -421,13 +331,9 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
 
         for event in inner.drain_events() {
             match event {
-                // The repaint was already requested from the reader thread; the
-                // event itself carries nothing else to act on.
                 TerminalEvent::Wakeup | TerminalEvent::Bell => {}
 
                 TerminalEvent::Title(title) if !title.trim().is_empty() => {
-                    // A build tab keeps its name: `make` sets titles of its own,
-                    // and "Build" is what the toolbar button promised.
                     if matches!(session.kind, SessionKind::Shell) {
                         session.title = title;
                     }
@@ -437,23 +343,16 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
                 TerminalEvent::ChildExit(code) => {
                     session.exited = Some(code);
                     if let SessionKind::Build(_) = session.kind {
-                        // Parsed once, here, rather than every frame: the output
-                        // is final the moment the child is gone, and walking the
-                        // whole scrollback per frame would be wasteful.
                         parsed = Some(parse_diagnostics(&inner.logical_text()));
                     }
                     if let SessionKind::Build(kind) = session.kind {
                         let status = match code {
                             Some(0) => BuildStatus::Succeeded,
                             Some(code) => BuildStatus::Failed(code),
-                            // Killed by a signal — a kill-and-restart, or Ctrl+C.
                             None => BuildStatus::Failed(-1),
                         };
                         session.status = Some(status);
                         match status {
-                            // A successful `make dylib` produced the library the
-                            // simulator loads, so hand it to the window Build &
-                            // Run already opened.
                             BuildStatus::Succeeded if kind == BuildKind::Dylib => {
                                 requests.reload_plugin = true;
                             }
@@ -475,14 +374,11 @@ pub fn tick(state: &mut TerminalState) -> TerminalRequests {
         }
     }
 
-    // Deferred: both of these need other fields of `state` while the loop above
-    // holds `state.sessions` mutably.
     if let Some(diagnostics) = parsed {
         state.diagnostics = diagnostics;
         state.stale_files.clear();
     }
 
-    // Reading the clipboard needs `state.clipboard`.
     if let Some(index) = load_clipboard_for
         && let Some(text) = state.clipboard.read()
         && let Some(inner) = state.sessions[index].inner.as_ref()
@@ -509,8 +405,6 @@ mod tests {
         }
     }
 
-    /// A session that records what it was told, so the controller's decisions
-    /// can be asserted without a PTY.
     #[derive(Default)]
     struct FakeInner {
         written: RefCell<Vec<u8>>,
@@ -518,8 +412,6 @@ mod tests {
         cleared: RefCell<bool>,
         resized: RefCell<Vec<TerminalSize>>,
         events: RefCell<Vec<TerminalEvent>>,
-        /// What the session would report as its logical output — the build log a
-        /// test wants diagnostics parsed from.
         output: RefCell<String>,
     }
 
@@ -565,8 +457,6 @@ mod tests {
         }
     }
 
-    /// Hands out `FakeInner`s and keeps a handle on each, so a test can inspect
-    /// the session the controller opened.
     #[derive(Default)]
     struct FakePort {
         opened: RefCell<Vec<Rc<FakeInner>>>,
@@ -617,14 +507,12 @@ mod tests {
         assert_eq!(state.sessions.len(), 3);
         assert_eq!(state.active, 2, "a new session becomes the active one");
 
-        // Closing a session before the active one shifts the index down with it.
         let first = state.sessions[0].id;
         close(&mut state, first);
         assert_eq!(state.sessions.len(), 2);
         assert_eq!(state.active, 1);
         assert!(*port.opened.borrow()[0].killed.borrow());
 
-        // Closing the active one clamps rather than running off the end.
         let last = state.sessions[1].id;
         close(&mut state, last);
         assert_eq!(state.active, 0);
@@ -640,7 +528,6 @@ mod tests {
         let port = Rc::new(FakePort::default());
         let mut state = state_over(port.clone(), None);
 
-        // `ensure_open` runs every frame from the panel.
         ensure_open(&mut state);
         ensure_open(&mut state);
         ensure_open(&mut state);
@@ -650,9 +537,6 @@ mod tests {
             "only the first frame opens a shell"
         );
 
-        // Regression: guarding on `sessions.is_empty()` instead of a flag would
-        // respawn a shell the instant the user closed the last one, making an
-        // empty panel unreachable.
         let only = state.sessions[0].id;
         close(&mut state, only);
         ensure_open(&mut state);
@@ -728,9 +612,6 @@ mod tests {
             "a dead session must not be written to"
         );
 
-        // The emulator outlives its child, so the output stays readable. This is
-        // what lets the panel show a failed build's errors after `make` exits —
-        // dropping the session here would take the diagnostics with it.
         assert!(
             active_snapshot(&state).is_some(),
             "an exited session must keep its scrollback: it is the build log"
@@ -750,7 +631,6 @@ mod tests {
         tick(&mut state);
         assert_eq!(state.sessions[0].title, "~/projects");
 
-        // Blank titles are ignored rather than blanking the tab.
         port.opened.borrow()[0]
             .events
             .borrow_mut()
@@ -811,7 +691,6 @@ mod tests {
         assert!(*port.opened.borrow()[1].cleared.borrow());
     }
 
-    /// Drives a build to completion with `code`, returning what `tick` asked for.
     fn build_finishing_with(kind: BuildKind, code: i32) -> (TerminalRequests, TerminalState) {
         let port = Rc::new(FakePort::default());
         let mut state = state_over(port.clone(), None);
@@ -871,7 +750,6 @@ make: *** [build/libtest3.dylib] Error 1"
         assert_eq!(state.diagnostics.len(), 1);
         state.stale_files.insert(PathBuf::from("/proj/a.cpp"));
 
-        // Pressing build again must not leave a mix of two runs on screen.
         run_build(&mut state, BuildKind::Dylib);
         assert!(state.diagnostics.is_empty());
         assert!(state.stale_files.is_empty());
@@ -892,7 +770,6 @@ make: *** [build/libtest3.dylib] Error 1"
         tick(&mut state);
         assert_eq!(state.diagnostics.len(), 1);
 
-        // A shell whose user typed `exit` is not a build result.
         open_shell(&mut state);
         let shell = port.opened.borrow().last().cloned().unwrap();
         *shell.output.borrow_mut() = "some unrelated shell output".to_string();
@@ -911,7 +788,6 @@ make: *** [build/libtest3.dylib] Error 1"
 
     #[test]
     fn a_successful_dylib_build_asks_for_the_simulator() {
-        // "Build & Run" only earns the second half of its name if it runs.
         let (requests, state) = build_finishing_with(BuildKind::Dylib, 0);
         assert!(requests.reload_plugin);
         assert!(requests.error.is_none());
@@ -937,10 +813,6 @@ make: *** [build/libtest3.dylib] Error 1"
 
     #[test]
     fn a_failed_dylib_build_asks_for_the_waiting_emulator_to_be_discarded() {
-        // The regression this guards: Build & Run creates the simulator's window
-        // up front (it can only be created on the click's frame), so a failed
-        // build has to explicitly take it away again — otherwise pressing Build
-        // & Run on broken code would show an emulator anyway.
         let (requests, _) = build_finishing_with(BuildKind::Dylib, 2);
         assert!(requests.build_failed);
         assert!(!requests.reload_plugin);
@@ -948,8 +820,6 @@ make: *** [build/libtest3.dylib] Error 1"
 
     #[test]
     fn a_failed_firmware_build_leaves_the_emulator_alone() {
-        // Compile has nothing to do with the simulator, so it must not close one
-        // the user opened.
         let (requests, _) = build_finishing_with(BuildKind::Firmware, 2);
         assert!(!requests.build_failed);
         assert!(!requests.reload_plugin);
@@ -964,7 +834,6 @@ make: *** [build/libtest3.dylib] Error 1"
 
     #[test]
     fn compiling_firmware_never_opens_the_simulator() {
-        // The Daisy target produces no host library for the simulator to load.
         let (requests, _) = build_finishing_with(BuildKind::Firmware, 0);
         assert!(!requests.reload_plugin);
     }

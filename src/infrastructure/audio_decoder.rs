@@ -1,4 +1,4 @@
-// Called from AudioEngine::load_file — not exposed outside infrastructure
+// Called from AudioEngine::load_file
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
