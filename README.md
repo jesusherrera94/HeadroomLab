@@ -180,6 +180,7 @@ Automatic updates are **turned off in debug builds**, so `cargo run` never conne
 - [ ] Tab keyboard navigation (`Cmd+W`, `Ctrl+Tab`, `Cmd+1..9`) and Close Others / Close All.
 - [ ] Restore open tabs when a project is reopened.
 - [ ] Live, as-you-type diagnostics (language server), gutter markers and hover tooltips.
+- [ ] Code suggestions
 
 ### Terminal
 
