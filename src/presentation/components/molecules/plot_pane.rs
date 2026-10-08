@@ -172,7 +172,6 @@ fn format_hz(hz: f64) -> String {
     }
 }
 
-
 fn waveform_points(wave: &Waveform, start_s: f64, end_s: f64) -> Vec<[f64; 2]> {
     let sample_rate = wave.sample_rate as f64;
     if wave.samples.is_empty() || sample_rate <= 0.0 {

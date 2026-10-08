@@ -1,7 +1,6 @@
-
-use eframe::egui::{self, Align2};
 use crate::presentation::syntax::code_font;
 use crate::presentation::theme;
+use eframe::egui::{self, Align2};
 
 const PADDING: f32 = 8.0;
 

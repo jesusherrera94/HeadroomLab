@@ -16,7 +16,6 @@ pub fn is_doom_file(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()) == Some(DOOM_FILE_NAME)
 }
 
-
 pub fn due_ticks(accumulator: &mut Duration, elapsed: Duration) -> u32 {
     *accumulator += elapsed;
     let mut ticks = 0;
@@ -97,7 +96,6 @@ fn weapon_for_slot(slot: u8) -> u8 {
         _ => 0,
     }
 }
-
 
 #[cfg(test)]
 mod tests {

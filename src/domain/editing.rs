@@ -1,4 +1,3 @@
-
 use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,7 +386,6 @@ mod tests {
         assert_eq!(out, "x\nx\nx\n");
     }
 
-
     #[test]
     fn delete_takes_the_following_newline_so_no_blank_line_is_left() {
         let text = "one\ntwo\nthree\n";
@@ -418,7 +416,6 @@ mod tests {
         let (out, _) = applied(text, &delete_lines(text, 2..5));
         assert_eq!(out, "a\nd\n");
     }
-
 
     #[test]
     fn word_at_finds_identifiers_including_underscores_and_digits() {

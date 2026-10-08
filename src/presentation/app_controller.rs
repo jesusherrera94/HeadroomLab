@@ -162,7 +162,6 @@ impl HeadroomApp {
         Self::viewport_id(fallback.unwrap_or(preferred))
     }
 
-
     fn viewport_id(window: WindowId) -> ViewportId {
         match window {
             WindowId::Splash => ViewportId::ROOT,

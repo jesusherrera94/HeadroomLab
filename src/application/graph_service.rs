@@ -112,7 +112,6 @@ impl GraphService {
     }
 }
 
-
 pub fn compute_graph_data(
     request: &GraphComputeRequest,
     cached_original: Option<(Waveform, Spectrum)>,

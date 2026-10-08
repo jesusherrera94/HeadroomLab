@@ -63,7 +63,6 @@ impl SimulatorService {
     }
 
     pub fn handle_file_upload(&self, file_path: String) -> Result<f32, AudioError> {
-
         let meta = self
             .audio_engine
             .load_file(&file_path)

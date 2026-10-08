@@ -238,7 +238,7 @@ mod tests {
     }
 
     fn enabled(updater: Arc<dyn UpdaterPort>) -> UpdateService {
-        let mut service = UpdateService::new(updater);  
+        let mut service = UpdateService::new(updater);
         service.enabled = true;
         service
     }

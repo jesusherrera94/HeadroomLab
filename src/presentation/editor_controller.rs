@@ -59,7 +59,6 @@ pub fn icon_for_file(name: &str) -> NodeIcon {
     }
 }
 
-
 pub struct TreeNode {
     pub name: String,
     pub path: PathBuf,
@@ -86,7 +85,6 @@ impl TreeNode {
         }
     }
 }
-
 
 pub struct FileTreeState {
     pub root: TreeNode,
@@ -1037,7 +1035,7 @@ fn run_pending_confirm(state: &mut EditorState, choice: ConfirmChoice) -> Confir
             ConfirmOutcome::default()
         }
         EditorAction::CloseTab(id) => {
-                let Some(index) = state.index_of(id) else {
+            let Some(index) = state.index_of(id) else {
                 return ConfirmOutcome::default();
             };
             if choice == ConfirmChoice::Alternate && !save_tab(state, index) {
@@ -1274,7 +1272,6 @@ mod tests {
             ))
         }
     }
-
 
     struct FakeClipboard;
 

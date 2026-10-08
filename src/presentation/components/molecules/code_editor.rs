@@ -513,7 +513,6 @@ fn slice_of(text: &str, range: Range<usize>) -> String {
         .collect()
 }
 
-
 fn commit(
     ui: &egui::Ui,
     id: egui::Id,

@@ -89,7 +89,6 @@ pub fn terminal_palette() -> TerminalPalette {
     }
 }
 
-
 pub fn terminal_color(rgb: Rgb) -> Color32 {
     Color32::from_rgb(rgb.r, rgb.g, rgb.b)
 }

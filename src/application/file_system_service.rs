@@ -49,7 +49,6 @@ impl FileSystemService {
         self.fs.delete_to_trash(path)
     }
 
-
     pub fn reveal(&self, path: &Path) -> Result<(), FileSystemError> {
         self.fs.reveal(path)
     }
