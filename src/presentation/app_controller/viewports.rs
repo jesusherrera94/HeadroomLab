@@ -143,7 +143,7 @@ impl HeadroomApp {
             viewport_id,
             ViewportBuilder::default()
                 .with_title(title)
-                .with_inner_size([640.0, 640.0])
+                .with_inner_size([640.0, 400.0])
                 .with_visible(!self.simulator_awaiting_build),
             |ui, _class| {
                 menu_command = Self::window_menu_bar(ui, context, WindowId::Simulator);
