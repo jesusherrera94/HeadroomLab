@@ -12,7 +12,9 @@ pub enum DocumentContent {
         crlf: bool,
     },
     Binary,
-    TooLarge { bytes: u64 },
+    TooLarge {
+        bytes: u64,
+    },
 }
 
 impl DocumentContent {

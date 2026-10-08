@@ -35,11 +35,9 @@ impl std::fmt::Display for ProjectGenerationError {
 
 impl std::error::Error for ProjectGenerationError {}
 
-
 pub trait ProjectGeneratorPort {
     fn generate(&self, name: &str, path: &std::path::Path) -> Result<(), ProjectGenerationError>;
 }
-
 
 pub struct DirEntryInfo {
     pub name: String,
@@ -142,7 +140,6 @@ pub trait DoomPort {
 }
 
 pub trait DoomGame {
-
     fn tick(&mut self, controls: DoomControls);
 
     fn frame(&self) -> &[u8];
@@ -187,7 +184,6 @@ pub trait AudioEnginePort {
 }
 
 pub trait UpdaterPort: Send + Sync {
-
     fn check(&self) -> Result<Option<ReleaseInfo>, UpdateError>;
 
     fn download_and_install(

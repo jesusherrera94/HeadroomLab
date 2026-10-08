@@ -1,4 +1,3 @@
-
 use eframe::egui::{self, RichText, text::LayoutJob};
 
 use crate::domain::terminal::{Rgb, TerminalCell, TerminalSize, grid_size};
@@ -11,7 +10,6 @@ use egui_phosphor::regular as ph;
 fn focus_id() -> egui::Id {
     egui::Id::new("terminal_grid")
 }
-
 
 pub fn has_focus(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.has_focus(focus_id()))
@@ -506,7 +504,6 @@ fn handle_keys(ui: &egui::Ui, state: &mut TerminalState, requests: &mut Terminal
                 modifiers,
                 ..
             } => {
-
                 if is_copy(key, &modifiers) {
                     if let Some(text) = state
                         .active_session()

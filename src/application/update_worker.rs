@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
@@ -13,7 +12,6 @@ pub enum UpdateJob {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateEvent {
-
     UpToDate,
     Found(ReleaseInfo),
     Progress {
@@ -29,7 +27,6 @@ pub enum UpdateEvent {
     },
     Failed(UpdateError),
 }
-
 
 pub struct UpdateWorker {
     job_tx: Sender<UpdateJob>,

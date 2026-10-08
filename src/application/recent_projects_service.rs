@@ -1,10 +1,7 @@
-
-
 use std::rc::Rc;
 
 use crate::application::ports::RecentProjectsStore;
 use crate::domain::project::RecentProject;
-
 
 const MAX_RECENTS: usize = 5;
 
@@ -14,7 +11,6 @@ pub struct RecentProjectsService {
 }
 
 impl RecentProjectsService {
-
     pub fn new(store: Rc<dyn RecentProjectsStore>) -> Self {
         let mut items = store.load();
         Self::normalize(&mut items);
@@ -55,7 +51,6 @@ impl RecentProjectsService {
         items.truncate(MAX_RECENTS);
     }
 }
-
 
 fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {

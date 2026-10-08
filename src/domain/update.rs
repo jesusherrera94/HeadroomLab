@@ -10,9 +10,15 @@ pub enum UpdateState {
         received: u64,
         total: Option<u64>,
     },
-    Installing { version: String },
-    Restarting { version: String },
-    Failed { message: String },
+    Installing {
+        version: String,
+    },
+    Restarting {
+        version: String,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 impl UpdateState {
@@ -142,13 +148,11 @@ fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-
 pub fn asset_name(pattern: &str, version: &str, target: &str) -> String {
     pattern
         .replace("{version}", version.trim_start_matches(['v', 'V']))
         .replace("{target}", target)
 }
-
 
 pub const fn current_target() -> &'static str {
     if cfg!(target_os = "macos") {
@@ -170,7 +174,6 @@ pub const fn current_target() -> &'static str {
     }
 }
 
-
 pub const fn archive_extension() -> &'static str {
     if cfg!(target_os = "windows") {
         ".zip"
@@ -178,7 +181,6 @@ pub const fn archive_extension() -> &'static str {
         ".tar.gz"
     }
 }
-
 
 pub fn select_asset<'a, I>(assets: I, expected: &str) -> Option<&'a str>
 where

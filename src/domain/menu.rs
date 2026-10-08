@@ -617,7 +617,6 @@ fn transport_menu(ctx: &MenuContext) -> Menu {
 fn window_menu(ctx: &MenuContext) -> Menu {
     let mut entries = Vec::new();
 
-
     let mut window = |id: WindowId, enabled: bool| {
         entries.push(checkable(
             id.menu_label(),

@@ -1,4 +1,3 @@
-
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -224,7 +223,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState) -> EditorViewEvents {
     events
 }
 
-
 fn is_stale(root: &Path, stale: &[PathBuf], file: &str) -> bool {
     let candidate = Path::new(file);
     let resolved = if candidate.is_absolute() {
@@ -237,7 +235,6 @@ fn is_stale(root: &Path, stale: &[PathBuf], file: &str) -> bool {
             || (candidate.file_name().is_some() && path.file_name() == candidate.file_name())
     })
 }
-
 
 fn names_same_file(root: &Path, path: &Path, file: &str) -> bool {
     let candidate = Path::new(file);

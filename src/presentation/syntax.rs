@@ -157,7 +157,6 @@ mod tests {
         assert_eq!(sections("abc", 99..99), vec![((0, 3), false)]);
     }
 
-
     #[test]
     fn every_language_token_resolves_to_a_syntect_grammar() {
         let syntaxes = syntect::parsing::SyntaxSet::load_defaults_newlines();
