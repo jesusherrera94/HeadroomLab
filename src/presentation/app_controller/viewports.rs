@@ -215,7 +215,7 @@ impl HeadroomApp {
             viewport_id,
             ViewportBuilder::default()
                 .with_title(title)
-                .with_inner_size([1040.0, 760.0]),
+                .with_inner_size([1040.0, 820.0]),
             |ui, _class| {
                 menu_command = Self::window_menu_bar(ui, context, WindowId::Graph);
                 graph_window::show(ui, session);
