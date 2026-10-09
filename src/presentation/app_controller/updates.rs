@@ -15,9 +15,9 @@ impl HeadroomApp {
 
         let shown_long_enough = self.splash_started.elapsed() >= SPLASH_DURATION;
         if self.updates.state().is_settled() && shown_long_enough {
-            self.screen = Screen::Initial;
-            self.initial.focus_requested = true;
-            ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
+            // self.screen = Screen::Initial;
+            // self.initial.focus_requested = true;
+            // ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(false));
         }
     }
 

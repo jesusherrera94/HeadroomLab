@@ -77,7 +77,7 @@ fn main() -> eframe::Result<()> {
 
     let mut viewport = ViewportBuilder::default()
         .with_title("HeadroomLab")
-        .with_inner_size([380.0, 280.0])
+        .with_inner_size([380.0, 300.0])
         .with_resizable(false);
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
