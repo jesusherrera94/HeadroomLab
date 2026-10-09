@@ -32,11 +32,19 @@ pub fn show(ui: &mut egui::Ui, state: &UpdateState) -> SplashEvents {
             progress_bar(ui, state.progress());
             ui.add_space(8.0);
 
-            ui.label(
-                RichText::new(state.status_line())
-                    .font(theme::body_font())
-                    .color(status_color(state)),
+            let mut status_text = egui::text::LayoutJob::default();
+            status_text.append(
+                &state.status_line(),
+                0.0,
+                egui::TextFormat {
+                    font_id: theme::body_font(),
+                    color: status_color(state),
+                    ..Default::default()
+                },
             );
+            status_text.wrap.max_rows = 2;
+            status_text.wrap.overflow_character = Some('…'); // default already
+            ui.add(egui::Label::new(status_text).wrap());
 
             if let Some(readout) = state.byte_readout() {
                 ui.add_space(4.0);

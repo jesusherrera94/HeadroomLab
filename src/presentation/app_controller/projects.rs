@@ -31,7 +31,7 @@ impl HeadroomApp {
             viewport_id,
             ViewportBuilder::default()
                 .with_title("HeadroomLab")
-                .with_inner_size([460.0, 420.0])
+                .with_inner_size([460.0, 480.0])
                 .with_resizable(false),
             |ui, _class| {
                 events = Some(initial_window::show(ui, state, &recents));
