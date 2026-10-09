@@ -56,10 +56,7 @@ impl UpdateService {
 
     pub fn start_at_launch(&mut self) {
         if !self.enabled {
-            // self.state = UpdateState::UpToDate;
-            self.state = UpdateState::Failed {
-                message: "Download failed: connection reset with very very very very very very very very very very very very very very very very very very very very very very  long description".into(),
-            };
+            self.state = UpdateState::UpToDate;
             return;
         }
         self.trigger = Trigger::Startup;
